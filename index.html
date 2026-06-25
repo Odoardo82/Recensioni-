@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#16212B" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Recensioni" />
+<title>Recensioni Amazon</title>
+<style>
+  html,body{margin:0;padding:0;background:#EAEEEC;}
+  #root{min-height:100vh;}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js" crossorigin></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+const STORE_KEY = "amazon_recensioni_v1";
+
+/* ---------- helper date ---------- */
+const oggiMezzanotte = () => { const d=new Date(); d.setHours(0,0,0,0); return d; };
+const parseISO = (s) => { if(!s) return null; const [y,m,g]=s.split("-").map(Number); return new Date(y,m-1,g); };
+const toISO = (d) => { const y=d.getFullYear(); const m=String(d.getMonth()+1).padStart(2,"0"); const g=String(d.getDate()).padStart(2,"0"); return `${y}-${m}-${g}`; };
+const addGiorni = (iso,n) => { const d=parseISO(iso); if(!d) return null; d.setDate(d.getDate()+Number(n||0)); return toISO(d); };
+const giorniDaOggi = (iso) => { const d=parseISO(iso); if(!d) return null; return Math.round((d-oggiMezzanotte())/86400000); };
+const fmtData = (iso) => { const d=parseISO(iso); if(!d) return "—"; return d.toLocaleDateString("it-IT",{day:"2-digit",month:"2-digit",year:"numeric"}); };
+const fmtEuro = (n) => (Number(n)||0).toLocaleString("it-IT",{style:"currency",currency:"EUR"});
+const numIt = (s) => { if(s===""||s==null) return 0; return parseFloat(String(s).replace(/\./g,"").replace(",",".")) || 0; };
+const tgUser = (h) => (h||"").replace(/^@/,"").trim();
+
+/* ---------- calcoli soldi ---------- */
+const feePct = (e) => (e.commissionePayPal==null ? 6 : Number(e.commissionePayPal)) || 0;
+const rimborsoAtteso = (e) => (Number(e.pagato)||0) * (Number(e.percentualeRimborso)||0) / 100;
+const nettoAtteso = (e) => e.coprePayPal ? rimborsoAtteso(e) : rimborsoAtteso(e) * (1 - feePct(e)/100);
+const recReale = (e) => (e.rimborsato && e.pagato>0) ? (Number(e.rimborsoRicevuto)||0)/e.pagato*100 : null;
+
+/* ---------- stato ---------- */
+function statoRecensione(e){
+  if (e.fatta) return "completata";
+  const d = giorniDaOggi(e.dataRecensione);
+  if (d==null) return "in-attesa";
+  if (d<0) return "scaduta";
+  if (d===0) return "oggi";
+  return "in-attesa";
+}
+const ETI = { completata:"Fatta", scaduta:"In ritardo", oggi:"Oggi", "in-attesa":"In attesa" };
+const archiviato = (e) => e.fatta && e.rimborsato;
+
+/* ---------- normalizza (compatibilita' dati vecchi) ---------- */
+function normalizza(e){
+  const pagato = Number(e.pagato)||0;
+  let perc = e.percentualeRimborso;
+  if (perc==null || perc==="") perc = (pagato>0 && e.rimborso!=null) ? Math.round((Number(e.rimborso)/pagato)*1000)/10 : 0;
+  const ga = e.giorniAttesa==null ? 7 : Number(e.giorniAttesa);
+  const arr = e.dataArrivo || toISO(oggiMezzanotte());
+  return {
+    id: e.id || Date.now()+Math.random(),
+    prodotto: e.prodotto||"", ordine: e.ordine||"", handleTelegram: e.handleTelegram||"",
+    pagato, percentualeRimborso: Number(perc)||0,
+    coprePayPal: !!e.coprePayPal, commissionePayPal: e.commissionePayPal==null?6:Number(e.commissionePayPal),
+    dataArrivo: arr, giorniAttesa: ga, recensioneManuale: !!e.recensioneManuale, dataRecensione: e.dataRecensione || addGiorni(arr, ga),
+    note: e.note||"", fatta: !!e.fatta,
+    rimborsato: !!e.rimborsato, rimborsoRicevuto: e.rimborsoRicevuto==null?null:Number(e.rimborsoRicevuto),
+  };
+}
+
+/* ---------- ICS ---------- */
+function scaricaICS(e){
+  const dt=(e.dataRecensione||"").replace(/-/g,""); if(!dt) return;
+  const stamp=toISO(new Date()).replace(/-/g,"")+"T090000";
+  const desc=[`Ordine: ${e.ordine||"—"}`, e.handleTelegram?`Agente: ${e.handleTelegram}`:"", `Pagato: ${fmtEuro(e.pagato)}`, `Concordato: ${e.percentualeRimborso}%`, `Netto atteso: ${fmtEuro(nettoAtteso(e))}`, e.note?`Note: ${e.note}`:""].filter(Boolean).join("\\n");
+  const ics=["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//Recensioni Amazon//IT","CALSCALE:GREGORIAN","BEGIN:VEVENT",`UID:${e.id}@recensioni-amazon`,`DTSTAMP:${stamp}`,`DTSTART:${dt}T100000`,`DTEND:${dt}T101500`,`SUMMARY:Recensione Amazon: ${e.prodotto||e.ordine||""}`,`DESCRIPTION:${desc}`,"BEGIN:VALARM","TRIGGER:-PT15M","ACTION:DISPLAY","DESCRIPTION:Promemoria recensione","END:VALARM","END:VEVENT","END:VCALENDAR"].join("\r\n");
+  const url=URL.createObjectURL(new Blob([ics],{type:"text/calendar;charset=utf-8"}));
+  const a=document.createElement("a"); a.href=url; a.download=`recensione-${(e.prodotto||e.ordine||"ordine").slice(0,20)}.ics`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+
+/* ---------- CSV ---------- */
+function esportaCSV(lista){
+  const intest=["Prodotto","Ordine","Agente Telegram","Pagato","Rimborso %","Rimborso atteso","Copre PayPal","Netto atteso","Ricevuto","Recupero reale %","Costo netto","Arrivo","Data recensione","Recensione","Rimborso","Note"];
+  const righe=lista.map((e)=>{
+    const rr=recReale(e);
+    const costo=e.rimborsato?(e.pagato-(Number(e.rimborsoRicevuto)||0)):(e.pagato-nettoAtteso(e));
+    return [e.prodotto||"",e.ordine||"",e.handleTelegram||"",
+      String(e.pagato).replace(".",","), e.percentualeRimborso+"%",
+      String(rimborsoAtteso(e).toFixed(2)).replace(".",","), e.coprePayPal?"Si":"No",
+      String(nettoAtteso(e).toFixed(2)).replace(".",","),
+      e.rimborsato?String(Number(e.rimborsoRicevuto).toFixed(2)).replace(".",","):"",
+      rr!=null?Math.round(rr)+"%":"", String(costo.toFixed(2)).replace(".",","),
+      fmtData(e.dataArrivo), fmtData(e.dataRecensione),
+      e.fatta?"Fatta":"Da fare", e.rimborsato?"Ricevuto":"In attesa",
+      (e.note||"").replace(/[\r\n;]/g," ")];
+  });
+  const csv="\uFEFF"+[intest,...righe].map((r)=>r.map((c)=>`"${c}"`).join(";")).join("\r\n");
+  const url=URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8"}));
+  const a=document.createElement("a"); a.href=url; a.download="recensioni-amazon.csv"; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+
+const formVuoto = () => ({ id:null, prodotto:"", ordine:"", handleTelegram:"", pagato:"", percentualeRimborso:"", coprePayPal:false, commissionePayPal:"6", dataArrivo:toISO(oggiMezzanotte()), giorniAttesa:"7", recensioneManuale:false, dataRecensione:addGiorni(toISO(oggiMezzanotte()),7), note:"", fatta:false, rimborsato:false, rimborsoRicevuto:null });
+
+function App(){
+  const [voci,setVoci]=useState([]);
+  const [caricato,setCaricato]=useState(false);
+  const [vista,setVista]=useState("attivi");
+  const [form,setForm]=useState(null);
+
+  useEffect(()=>{ try{ const raw=localStorage.getItem(STORE_KEY); if(raw) setVoci(JSON.parse(raw).map(normalizza)); }catch(_){} setCaricato(true); },[]);
+  useEffect(()=>{ if(!caricato) return; try{ localStorage.setItem(STORE_KEY,JSON.stringify(voci)); }catch(_){} },[voci,caricato]);
+
+  const salvaForm=()=>{
+    if(!form.pagato && !form.prodotto && !form.ordine) return;
+    const base={ ...form,
+      pagato:numIt(form.pagato), percentualeRimborso:numIt(form.percentualeRimborso),
+      commissionePayPal:numIt(form.commissionePayPal), giorniAttesa:parseInt(form.giorniAttesa)||0,
+      dataRecensione: form.recensioneManuale ? form.dataRecensione : addGiorni(form.dataArrivo, parseInt(form.giorniAttesa)||0),
+      rimborsoRicevuto: form.rimborsoRicevuto==null?null:Number(form.rimborsoRicevuto) };
+    if(form.id) setVoci((v)=>v.map((x)=>x.id===form.id?base:x));
+    else setVoci((v)=>[{...base,id:Date.now()},...v]);
+    setForm(null);
+  };
+  const elimina=(id)=>setVoci((v)=>v.filter((x)=>x.id!==id));
+  const segnaRec=(id,fatta)=>setVoci((v)=>v.map((x)=>x.id===id?{...x,fatta}:x));
+  const segnaRimborso=(e)=>{ const def=nettoAtteso(e).toFixed(2).replace(".",","); const r=window.prompt("Quanto hai ricevuto via PayPal? (€)",def); if(r==null) return; setVoci((v)=>v.map((x)=>x.id===e.id?{...x,rimborsato:true,rimborsoRicevuto:numIt(r)}:x)); };
+  const annullaRimborso=(id)=>setVoci((v)=>v.map((x)=>x.id===id?{...x,rimborsato:false,rimborsoRicevuto:null}:x));
+
+  const stat=useMemo(()=>{
+    const speso=voci.reduce((s,e)=>s+(Number(e.pagato)||0),0);
+    const ricevuto=voci.reduce((s,e)=>s+(e.rimborsato?(Number(e.rimborsoRicevuto)||0):0),0);
+    const daRicevere=voci.reduce((s,e)=>s+(!e.rimborsato?nettoAtteso(e):0),0);
+    const conP=voci.filter((e)=>e.pagato>0);
+    const recMedio=conP.length>0?Math.round(conP.reduce((s,e)=>s+(Number(e.percentualeRimborso)||0),0)/conP.length):0;
+    return {speso,ricevuto,daRicevere,recMedio};
+  },[voci]);
+
+  const daPubblicare=voci.filter((e)=>!e.fatta && ["oggi","scaduta"].includes(statoRecensione(e)));
+  const inRitardo=daPubblicare.filter((e)=>statoRecensione(e)==="scaduta").length;
+
+  const lista=useMemo(()=>{
+    let l=[...voci];
+    if(vista==="attivi") l=l.filter((e)=>!archiviato(e));
+    if(vista==="archivio") l=l.filter((e)=>archiviato(e));
+    l.sort((a,b)=>(a.dataRecensione||"").localeCompare(b.dataRecensione||""));
+    return l;
+  },[voci,vista]);
+
+  if(!caricato) return (<div className="app"><style>{CSS}</style><div className="loading">Carico i tuoi dati…</div></div>);
+
+  const fp = form ? { pagato:numIt(form.pagato), percentualeRimborso:numIt(form.percentualeRimborso), coprePayPal:form.coprePayPal, commissionePayPal:numIt(form.commissionePayPal) } : null;
+
+  return (
+    <div className="app">
+      <style>{CSS}</style>
+      <header className="hd">
+        <div className="hd-row">
+          <div><div className="hd-eyebrow">Promemoria rimborsi</div><h1 className="hd-title">Recensioni Amazon</h1></div>
+          <div className="hd-rec"><span className="hd-rec-num">{stat.recMedio}%</span><span className="hd-rec-lab">media concordata</span></div>
+        </div>
+        <div className="stats">
+          <div className="stat"><span className="stat-lab">Speso</span><span className="stat-val">{fmtEuro(stat.speso)}</span></div>
+          <div className="stat"><span className="stat-lab">Ricevuto</span><span className="stat-val green">{fmtEuro(stat.ricevuto)}</span></div>
+          <div className="stat"><span className="stat-lab">Da ricevere</span><span className="stat-val gold">{fmtEuro(stat.daRicevere)}</span></div>
+        </div>
+      </header>
+
+      {daPubblicare.length>0 && (
+        <div className="alert"><strong>{daPubblicare.length}</strong> recensione/i da pubblicare{inRitardo>0 && <> (di cui <strong>{inRitardo}</strong> in ritardo)</>}.</div>
+      )}
+
+      <div className="tabs">
+        {[["attivi","Attivi"],["archivio","Archivio"],["tutti","Tutti"]].map(([k,lab])=>(
+          <button key={k} className={"tab"+(vista===k?" on":"")} onClick={()=>setVista(k)}>{lab}</button>
+        ))}
+      </div>
+
+      <main className="lista">
+        {lista.length===0 && (<div className="vuoto">Nessun ordine qui.<br/>Tocca <strong>＋ Aggiungi ordine</strong> per iniziare.</div>)}
+        {lista.map((e)=>{
+          const st=statoRecensione(e);
+          const perc = e.rimborsato ? Math.round(recReale(e)) : Math.round(e.percentualeRimborso);
+          const gg=giorniDaOggi(e.dataRecensione);
+          let recTxt = e.fatta ? "Recensione fatta" : gg===0?"Recensione oggi" : gg<0?`Recensione in ritardo ${Math.abs(gg)}g` : gg===1?"Recensione tra 1g" : `Recensione tra ${gg}g`;
+          const recCls = e.fatta?"k-ok":st==="oggi"?"k-oggi":st==="scaduta"?"k-scaduta":"";
+          const diff = e.rimborsato ? (Number(e.rimborsoRicevuto)||0) - nettoAtteso(e) : null;
+          const cardCls = archiviato(e)?"st-completata":st==="scaduta"?"st-scaduta":st==="oggi"?"st-oggi":"";
+          return (
+            <article key={e.id} className={"card "+cardCls}>
+              <div className="card-top">
+                <div className="card-name">{e.prodotto||"(senza nome)"}</div>
+                <span className={"badge b-"+st}>{ETI[st]}</span>
+              </div>
+              <div className="metarow">
+                <span className="card-ordine">Ordine {e.ordine||"—"}</span>
+                {tgUser(e.handleTelegram) && <a className="tg" href={`https://t.me/${tgUser(e.handleTelegram)}`} target="_blank" rel="noreferrer">👤 @{tgUser(e.handleTelegram)}</a>}
+              </div>
+
+              <div className="recbar">
+                <div className="recbar-track"><div className="recbar-fill" style={{width:Math.min(100,perc)+"%"}}/></div>
+                <span className="recbar-pct">{perc}%</span>
+              </div>
+
+              <span className={"ppchip "+(e.coprePayPal?"pp-ok":"pp-no")}>{e.coprePayPal?"Tasse PayPal coperte":`PayPal −${feePct(e)}% a tuo carico`}</span>
+
+              <div className="cifre">
+                <div><span className="cifra-lab">Pagato</span><span className="cifra-val">{fmtEuro(e.pagato)}</span></div>
+                <div><span className="cifra-lab">Concordato {e.percentualeRimborso}%</span><span className="cifra-val">{fmtEuro(rimborsoAtteso(e))}</span></div>
+                <div><span className="cifra-lab">Netto atteso</span><span className="cifra-val">{fmtEuro(nettoAtteso(e))}</span></div>
+                {e.rimborsato
+                  ? <div><span className="cifra-lab">Ricevuto</span><span className="cifra-val gold">{fmtEuro(e.rimborsoRicevuto)}</span></div>
+                  : <div><span className="cifra-lab">Costo netto</span><span className="cifra-val">{fmtEuro(e.pagato-nettoAtteso(e))}</span></div>}
+              </div>
+
+              {e.rimborsato && (
+                <div className={"esito "+(diff>=-0.01?"ok":"ko")}>
+                  {diff>=-0.01 ? `✓ Ricevuto come previsto` : `${fmtEuro(diff)} rispetto all'atteso`} · recupero reale {Math.round(recReale(e))}%
+                </div>
+              )}
+
+              <div className="checks">
+                <span className={"chk "+recCls}>{recTxt}</span>
+                <span className={"chk "+(e.rimborsato?"k-ok":"k-wait")}>{e.rimborsato?"Rimborso ricevuto":"Rimborso da ricevere"}</span>
+              </div>
+
+              {e.note && <div className="card-note">{e.note}</div>}
+
+              <div className="azioni">
+                {!e.fatta
+                  ? <button className="az az-ok" onClick={()=>segnaRec(e.id,true)}>✓ Recensione</button>
+                  : <button className="az" onClick={()=>segnaRec(e.id,false)}>↺ Recensione</button>}
+                {!e.rimborsato
+                  ? <button className="az az-gold" onClick={()=>segnaRimborso(e)}>💰 Rimborso</button>
+                  : <button className="az" onClick={()=>annullaRimborso(e.id)}>↺ Rimborso</button>}
+                <button className="az" onClick={()=>scaricaICS(e)}>🔔</button>
+                <button className="az" onClick={()=>setForm({ ...e, pagato:String(e.pagato), percentualeRimborso:String(e.percentualeRimborso), commissionePayPal:String(e.commissionePayPal), giorniAttesa:String(e.giorniAttesa) })}>✎</button>
+                <button className="az az-del" onClick={()=>elimina(e.id)}>Elimina</button>
+              </div>
+            </article>
+          );
+        })}
+      </main>
+
+      <div className="footer-btns">
+        <button className="big-add" onClick={()=>setForm(formVuoto())}>＋ Aggiungi ordine</button>
+        {voci.length>0 && <button className="exp" onClick={()=>esportaCSV(voci)}>CSV</button>}
+      </div>
+
+      {form && (
+        <div className="modale" onClick={()=>setForm(null)}>
+          <div className="sheet" onClick={(ev)=>ev.stopPropagation()}>
+            <div className="sheet-hd">{form.id?"Modifica ordine":"Nuovo ordine"}</div>
+
+            <label className="campo"><span>Prodotto</span>
+              <input value={form.prodotto} onChange={(ev)=>setForm({...form,prodotto:ev.target.value})} placeholder="Es. Cuffie bluetooth"/></label>
+            <label className="campo"><span>Numero ordine</span>
+              <input value={form.ordine} onChange={(ev)=>setForm({...form,ordine:ev.target.value})} placeholder="123-4567890-1234567"/></label>
+            <label className="campo"><span>Handle Telegram agente</span>
+              <input value={form.handleTelegram} onChange={(ev)=>setForm({...form,handleTelegram:ev.target.value})} placeholder="@agente"/></label>
+
+            <div className="campo-row">
+              <label className="campo"><span>Pagato (€)</span>
+                <input inputMode="decimal" value={form.pagato} onChange={(ev)=>setForm({...form,pagato:ev.target.value})} placeholder="29,99"/></label>
+              <label className="campo"><span>Rimborso concordato (%)</span>
+                <input inputMode="decimal" value={form.percentualeRimborso} onChange={(ev)=>setForm({...form,percentualeRimborso:ev.target.value})} placeholder="80"/></label>
+            </div>
+
+            <div className="campo"><span>Il rimborso copre le tasse PayPal?</span>
+              <div className="pills">
+                <button className={"pill"+(form.coprePayPal?" on":"")} onClick={()=>setForm({...form,coprePayPal:true})}>Sì, coperte</button>
+                <button className={"pill"+(!form.coprePayPal?" on":"")} onClick={()=>setForm({...form,coprePayPal:false})}>No, a mio carico</button>
+              </div>
+            </div>
+            <label className="campo"><span>Commissione PayPal (%)</span>
+              <input inputMode="decimal" value={form.commissionePayPal} onChange={(ev)=>setForm({...form,commissionePayPal:ev.target.value})} placeholder="6"/></label>
+
+            {fp.pagato>0 && fp.percentualeRimborso>0 && (
+              <div className="anteprima-rec">
+                Rimborso atteso: <strong>{fmtEuro(rimborsoAtteso(fp))}</strong> · Netto dopo PayPal: <strong>{fmtEuro(nettoAtteso(fp))}</strong> · Costo netto: {fmtEuro(fp.pagato-nettoAtteso(fp))}
+              </div>
+            )}
+
+            <label className="campo"><span>Arrivo previsto</span>
+              <input type="date" value={form.dataArrivo} onChange={(ev)=>setForm({...form,dataArrivo:ev.target.value})}/></label>
+
+            <div className="campo"><span>Promemoria recensione</span>
+              <div className="pills">
+                <button className={"pill"+(!form.recensioneManuale?" on":"")} onClick={()=>setForm({...form,recensioneManuale:false})}>Automatica</button>
+                <button className={"pill"+(form.recensioneManuale?" on":"")} onClick={()=>setForm({...form,recensioneManuale:true, dataRecensione: form.dataRecensione || addGiorni(form.dataArrivo, form.giorniAttesa)})}>Scelgo io</button>
+              </div>
+            </div>
+
+            {!form.recensioneManuale ? (
+              <React.Fragment>
+                <label className="campo"><span>Giorni dopo l'arrivo</span>
+                  <input inputMode="numeric" value={form.giorniAttesa} onChange={(ev)=>setForm({...form,giorniAttesa:ev.target.value})}/></label>
+                <div className="anteprima-data">Promemoria recensione il <strong>{fmtData(addGiorni(form.dataArrivo,form.giorniAttesa))}</strong></div>
+              </React.Fragment>
+            ) : (
+              <label className="campo"><span>Data recensione</span>
+                <input type="date" value={form.dataRecensione} onChange={(ev)=>setForm({...form,dataRecensione:ev.target.value})}/></label>
+            )}
+
+            <label className="campo"><span>Note</span>
+              <textarea rows={2} value={form.note} onChange={(ev)=>setForm({...form,note:ev.target.value})}/></label>
+
+            <div className="sheet-btns">
+              <button className="annulla" onClick={()=>setForm(null)}>Annulla</button>
+              <button className="salva" onClick={salvaForm}>Salva</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const CSS = `
+* { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+.app{ --ink:#16212B; --ink2:#46586A; --paper:#EAEEEC; --card:#FFFFFF; --line:#DDE4E0; --gold:#C7871E; --gold-bg:#FBF1DD; --green:#2E8B66; --green-bg:#E2F2EB; --coral:#D5564A; --coral-bg:#FBE6E3;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; background:var(--paper); color:var(--ink); min-height:100vh; max-width:560px; margin:0 auto; padding-bottom:110px; }
+.loading{ padding:60px 20px; text-align:center; color:var(--ink2); }
+.hd{ background:var(--ink); color:#fff; padding:18px 18px 16px; border-radius:0 0 22px 22px; }
+.hd-row{ display:flex; justify-content:space-between; align-items:flex-start; }
+.hd-eyebrow{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:#9FB3C2; font-weight:600; }
+.hd-title{ font-size:25px; font-weight:750; margin:2px 0 0; letter-spacing:-.02em; }
+.hd-rec{ text-align:right; } .hd-rec-num{ display:block; font-size:26px; font-weight:800; color:#F0B748; line-height:1; }
+.hd-rec-lab{ font-size:10px; color:#9FB3C2; text-transform:uppercase; letter-spacing:.06em; }
+.stats{ display:flex; gap:8px; margin-top:16px; }
+.stat{ flex:1; background:rgba(255,255,255,.07); border-radius:12px; padding:9px 10px; }
+.stat-lab{ display:block; font-size:10.5px; color:#9FB3C2; text-transform:uppercase; letter-spacing:.04em; }
+.stat-val{ display:block; font-size:14.5px; font-weight:700; margin-top:2px; } .stat-val.gold{ color:#F0B748; } .stat-val.green{ color:#7FD3AC; }
+.alert{ margin:14px 14px 0; background:var(--gold-bg); color:#7A540F; border:1px solid #EAD6A8; border-radius:12px; padding:11px 14px; font-size:14px; } .alert strong{ font-weight:800; }
+.tabs{ display:flex; gap:6px; padding:14px 14px 4px; }
+.tab{ flex:1; border:none; background:transparent; color:var(--ink2); font-size:14px; font-weight:600; padding:9px 0; border-radius:10px; cursor:pointer; } .tab.on{ background:var(--ink); color:#fff; }
+.lista{ padding:8px 14px 0; }
+.vuoto{ text-align:center; color:var(--ink2); padding:40px 16px; line-height:1.6; font-size:15px; }
+.card{ background:var(--card); border:1px solid var(--line); border-radius:16px; padding:14px; margin-bottom:12px; border-left:5px solid var(--line); }
+.card.st-oggi{ border-left-color:var(--gold); } .card.st-scaduta{ border-left-color:var(--coral); } .card.st-completata{ border-left-color:var(--green); opacity:.82; }
+.card-top{ display:flex; justify-content:space-between; align-items:center; gap:8px; }
+.card-name{ font-size:16px; font-weight:700; letter-spacing:-.01em; }
+.metarow{ display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-top:3px; }
+.card-ordine{ font-size:12px; color:var(--ink2); font-variant-numeric:tabular-nums; }
+.tg{ font-size:12.5px; color:#2E6F9E; font-weight:700; text-decoration:none; }
+.badge{ font-size:11px; font-weight:700; padding:3px 9px; border-radius:20px; white-space:nowrap; }
+.b-oggi{ background:var(--gold-bg); color:#8A5D10; } .b-scaduta{ background:var(--coral-bg); color:#A4322A; } .b-completata{ background:var(--green-bg); color:#1F6B4C; } .b-in-attesa{ background:#EBF0F4; color:#4A6275; }
+.recbar{ display:flex; align-items:center; gap:9px; margin:11px 0 4px; }
+.recbar-track{ flex:1; height:8px; background:#EFEAE0; border-radius:6px; overflow:hidden; }
+.recbar-fill{ height:100%; background:linear-gradient(90deg,#D89B2C,#C7871E); border-radius:6px; }
+.recbar-pct{ font-size:14px; font-weight:800; color:var(--gold); min-width:38px; text-align:right; }
+.ppchip{ display:inline-block; font-size:11px; font-weight:700; padding:3px 9px; border-radius:20px; margin:6px 0 11px; }
+.pp-ok{ background:var(--green-bg); color:#1F6B4C; } .pp-no{ background:var(--gold-bg); color:#8A5D10; }
+.cifre{ display:grid; grid-template-columns:1fr 1fr; gap:9px 12px; }
+.cifre > div{ display:flex; flex-direction:column; }
+.cifra-lab{ font-size:11px; color:var(--ink2); text-transform:uppercase; letter-spacing:.03em; }
+.cifra-val{ font-size:15px; font-weight:700; font-variant-numeric:tabular-nums; } .cifra-val.gold{ color:var(--gold); }
+.esito{ margin-top:11px; font-size:13px; font-weight:700; padding:8px 11px; border-radius:9px; }
+.esito.ok{ background:var(--green-bg); color:#1F6B4C; } .esito.ko{ background:var(--coral-bg); color:#A4322A; }
+.checks{ display:flex; gap:7px; margin-top:11px; flex-wrap:wrap; }
+.chk{ font-size:12px; font-weight:700; padding:6px 10px; border-radius:8px; background:#EBF0F4; color:#3F576A; }
+.chk.k-oggi{ background:var(--gold-bg); color:#8A5D10; } .chk.k-scaduta{ background:var(--coral-bg); color:#A4322A; } .chk.k-ok{ background:var(--green-bg); color:#1F6B4C; } .chk.k-wait{ background:var(--gold-bg); color:#8A5D10; }
+.card-note{ margin-top:9px; font-size:13px; color:var(--ink2); background:#F5F7F6; padding:8px 10px; border-radius:8px; }
+.azioni{ display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; }
+.az{ border:1px solid var(--line); background:#fff; color:var(--ink); font-size:13px; font-weight:600; padding:8px 11px; border-radius:9px; cursor:pointer; }
+.az-ok{ background:var(--green); color:#fff; border-color:var(--green); } .az-gold{ background:var(--gold); color:#fff; border-color:var(--gold); }
+.az-del{ color:var(--coral); border-color:#EAD2CF; margin-left:auto; }
+.footer-btns{ position:fixed; bottom:0; left:0; right:0; max-width:560px; margin:0 auto; display:flex; gap:9px; padding:12px 14px 16px; background:linear-gradient(transparent,var(--paper) 28%); }
+.big-add{ flex:1; background:var(--gold); color:#fff; border:none; font-size:16px; font-weight:750; padding:15px; border-radius:14px; cursor:pointer; box-shadow:0 6px 18px rgba(199,135,30,.32); }
+.exp{ background:#fff; border:1px solid var(--line); color:var(--ink); font-weight:600; font-size:14px; padding:0 18px; border-radius:14px; cursor:pointer; }
+.modale{ position:fixed; inset:0; background:rgba(16,33,43,.5); display:flex; align-items:flex-end; z-index:50; backdrop-filter:blur(2px); }
+.sheet{ background:var(--paper); width:100%; max-width:560px; margin:0 auto; border-radius:22px 22px 0 0; padding:18px 16px calc(18px + env(safe-area-inset-bottom)); max-height:92vh; overflow:auto; animation:su .22s ease; }
+@keyframes su{ from{ transform:translateY(30px); opacity:.6 } to{ transform:none; opacity:1 } }
+.sheet-hd{ font-size:18px; font-weight:750; margin-bottom:14px; }
+.campo{ display:flex; flex-direction:column; gap:5px; margin-bottom:12px; }
+.campo > span{ font-size:13px; font-weight:600; color:var(--ink2); }
+.campo input, .campo textarea{ border:1px solid var(--line); background:#fff; border-radius:11px; padding:13px 12px; font-size:16px; color:var(--ink); font-family:inherit; width:100%; }
+.campo input:focus, .campo textarea:focus{ outline:2px solid var(--gold); border-color:var(--gold); }
+.campo-row{ display:flex; gap:10px; } .campo-row .campo{ flex:1; }
+.pills{ display:flex; gap:8px; }
+.pill{ flex:1; border:1px solid var(--line); background:#fff; color:var(--ink2); font-weight:600; font-size:14px; padding:12px; border-radius:11px; cursor:pointer; }
+.pill.on{ background:var(--ink); color:#fff; border-color:var(--ink); }
+.anteprima-rec{ background:var(--gold-bg); color:#7A540F; border-radius:10px; padding:9px 12px; font-size:13.5px; margin:-2px 0 12px; } .anteprima-rec strong{ font-weight:800; }
+.anteprima-data{ background:#EBF0F4; color:#3F576A; border-radius:10px; padding:9px 12px; font-size:13.5px; margin-bottom:12px; }
+.sheet-btns{ display:flex; gap:10px; margin-top:6px; }
+.annulla{ flex:1; background:#fff; border:1px solid var(--line); color:var(--ink2); font-weight:600; font-size:15px; padding:14px; border-radius:13px; cursor:pointer; }
+.salva{ flex:2; background:var(--ink); color:#fff; border:none; font-weight:750; font-size:16px; padding:14px; border-radius:13px; cursor:pointer; }
+`;
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
