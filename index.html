@@ -42,7 +42,15 @@ const addGiorni = (iso,n) => { const d=parseISO(iso); if(!d) return null; d.setD
 const giorniDaOggi = (iso) => { const d=parseISO(iso); if(!d) return null; return Math.round((d-oggiMezzanotte())/86400000); };
 const fmtData = (iso) => { const d=parseISO(iso); if(!d) return "—"; return d.toLocaleDateString("it-IT",{day:"2-digit",month:"2-digit",year:"numeric"}); };
 const fmtEuro = (n) => (Number(n)||0).toLocaleString("it-IT",{style:"currency",currency:"EUR"});
-const numIt = (s) => { if(s===""||s==null) return 0; return parseFloat(String(s).replace(/\./g,"").replace(",",".")) || 0; };
+const numIt = (s) => {
+  if(s===""||s==null) return 0;
+  let t=String(s).trim().replace(/[^\d.,-]/g,"");
+  const hc=t.includes(","), hd=t.includes(".");
+  if(hc&&hd){ if(t.lastIndexOf(",")>t.lastIndexOf(".")) t=t.replace(/\./g,"").replace(",","."); else t=t.replace(/,/g,""); }
+  else if(hc){ t=t.replace(",","."); }
+  else if(hd){ if(t.split(".").length>2) t=t.replace(/\./g,""); }
+  const n=parseFloat(t); return isNaN(n)?0:n;
+};
 const numStr = (n) => (n==null||n==="")?"":String(n).replace(".",",");
 const tgUser = (h) => (h||"").replace(/^@/,"").trim();
 
