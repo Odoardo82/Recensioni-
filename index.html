@@ -6,8 +6,8 @@
 <meta name="theme-color" content="#16212B" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-<meta name="apple-mobile-web-app-title" content="Recensioni" />
-<title>Recensioni Amazon</title>
+<meta name="apple-mobile-web-app-title" content="Amz Review" />
+<title>Amz Review</title>
 <style> html,body{margin:0;padding:0;background:#EAEEEC;} #root{min-height:100vh;} </style>
 <script src="https://www.gstatic.com/firebasejs/12.15.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/12.15.0/firebase-auth-compat.js"></script>
@@ -43,6 +43,7 @@ const giorniDaOggi = (iso) => { const d=parseISO(iso); if(!d) return null; retur
 const fmtData = (iso) => { const d=parseISO(iso); if(!d) return "—"; return d.toLocaleDateString("it-IT",{day:"2-digit",month:"2-digit",year:"numeric"}); };
 const fmtEuro = (n) => (Number(n)||0).toLocaleString("it-IT",{style:"currency",currency:"EUR"});
 const numIt = (s) => { if(s===""||s==null) return 0; return parseFloat(String(s).replace(/\./g,"").replace(",",".")) || 0; };
+const numStr = (n) => (n==null||n==="")?"":String(n).replace(".",",");
 const tgUser = (h) => (h||"").replace(/^@/,"").trim();
 
 const feePct = (e) => (e.commissionePayPal==null ? 6 : Number(e.commissionePayPal)) || 0;
@@ -107,7 +108,7 @@ function Login(){
     <div className="login"><style>{CSS}</style>
       <div className="login-card">
         <div className="login-eyebrow">Promemoria rimborsi</div>
-        <h1 className="login-title">Recensioni Amazon</h1>
+        <svg className="logo-svg big" viewBox="0 0 230 58" role="img" aria-label="Amz Review"><text x="2" y="36">Amz Review</text><path d="M8 45 C 72 60, 156 60, 206 45" fill="none" stroke="#FF9900" strokeWidth="4" strokeLinecap="round"/><path d="M206 45 l -9 1.6 l 5.4 7.9 z" fill="#FF9900"/></svg>
         <p className="login-sub">Accedi per ritrovare i tuoi ordini su ogni dispositivo.</p>
         <label className="campo"><span>Email</span><input type="email" inputMode="email" value={email} onChange={(e)=>setEmail(e.target.value)} placeholder="tuamail@esempio.it"/></label>
         <label className="campo"><span>Password</span><input type="password" value={pw} onChange={(e)=>setPw(e.target.value)} placeholder="minimo 6 caratteri"/></label>
@@ -158,7 +159,7 @@ function Main({user}){
     <div className="app"><style>{CSS}</style>
       <header className="hd">
         <div className="hd-top"><span className="hd-eyebrow">Promemoria rimborsi</span><button className="logout" onClick={()=>auth.signOut()}>Esci</button></div>
-        <div className="hd-row"><h1 className="hd-title">Recensioni Amazon</h1><div className="hd-rec"><span className="hd-rec-num">{stat.recMedio}%</span><span className="hd-rec-lab">media concordata</span></div></div>
+        <div className="hd-row"><svg className="logo-svg" viewBox="0 0 230 58" role="img" aria-label="Amz Review"><text x="2" y="36">Amz Review</text><path d="M8 45 C 72 60, 156 60, 206 45" fill="none" stroke="#FF9900" strokeWidth="4" strokeLinecap="round"/><path d="M206 45 l -9 1.6 l 5.4 7.9 z" fill="#FF9900"/></svg><div className="hd-rec"><span className="hd-rec-num">{stat.recMedio}%</span><span className="hd-rec-lab">media concordata</span></div></div>
         <div className="stats">
           <div className="stat"><span className="stat-lab">Speso</span><span className="stat-val">{fmtEuro(stat.speso)}</span></div>
           <div className="stat"><span className="stat-lab">Ricevuto</span><span className="stat-val green">{fmtEuro(stat.ricevuto)}</span></div>
@@ -196,7 +197,7 @@ function Main({user}){
                 {!e.senzaRecensione && (!e.fatta?<button className="az az-ok" onClick={()=>segnaRec(e.id,true)}>✓ Recensione</button>:<button className="az" onClick={()=>segnaRec(e.id,false)}>↺ Recensione</button>)}
                 {!e.rimborsato?<button className="az az-gold" onClick={()=>segnaRimborso(e)}>💰 Rimborso</button>:<button className="az" onClick={()=>annullaRimborso(e.id)}>↺ Rimborso</button>}
                 <button className="az" onClick={()=>scaricaICS(e)}>🔔</button>
-                <button className="az" onClick={()=>setForm({...e, pagato:String(e.pagato), percentualeRimborso:String(e.percentualeRimborso), perditaFissa:String(e.perditaFissa), commissionePayPal:String(e.commissionePayPal), giorniAttesa:String(e.giorniAttesa)})}>✎</button>
+                <button className="az" onClick={()=>setForm({...e, pagato:numStr(e.pagato), percentualeRimborso:numStr(e.percentualeRimborso), perditaFissa:numStr(e.perditaFissa), commissionePayPal:numStr(e.commissionePayPal), giorniAttesa:String(e.giorniAttesa)})}>✎</button>
                 <button className="az az-del" onClick={()=>elimina(e.id)}>Elimina</button>
               </div>
             </article>
@@ -276,6 +277,9 @@ const CSS = `
 .logout{ background:rgba(255,255,255,.12); color:#fff; border:none; font-size:12.5px; font-weight:600; padding:6px 12px; border-radius:20px; cursor:pointer; }
 .hd-row{ display:flex; justify-content:space-between; align-items:flex-start; }
 .hd-title{ font-size:24px; font-weight:750; margin:0; letter-spacing:-.02em; }
+.logo-svg{ height:40px; width:auto; max-width:72%; display:block; overflow:visible; }
+.logo-svg.big{ height:52px; margin:2px 0 8px; }
+.logo-svg text{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; font-weight:800; font-size:30px; letter-spacing:-0.6px; fill:currentColor; }
 .hd-rec{ text-align:right; } .hd-rec-num{ display:block; font-size:25px; font-weight:800; color:#F0B748; line-height:1; }
 .hd-rec-lab{ font-size:10px; color:#9FB3C2; text-transform:uppercase; letter-spacing:.06em; }
 .stats{ display:flex; gap:8px; margin-top:16px; }
