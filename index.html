@@ -35,7 +35,6 @@ firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.database();
 
-/* ---------- helper ---------- */
 const oggiMezzanotte = () => { const d=new Date(); d.setHours(0,0,0,0); return d; };
 const parseISO = (s) => { if(!s) return null; const [y,m,g]=s.split("-").map(Number); return new Date(y,m-1,g); };
 const toISO = (d) => { const y=d.getFullYear(); const m=String(d.getMonth()+1).padStart(2,"0"); const g=String(d.getDate()).padStart(2,"0"); return `${y}-${m}-${g}`; };
@@ -47,13 +46,14 @@ const numIt = (s) => { if(s===""||s==null) return 0; return parseFloat(String(s)
 const tgUser = (h) => (h||"").replace(/^@/,"").trim();
 
 const feePct = (e) => (e.commissionePayPal==null ? 6 : Number(e.commissionePayPal)) || 0;
-const rimborsoAtteso = (e) => (Number(e.pagato)||0) * (Number(e.percentualeRimborso)||0) / 100;
+const rimborsoAtteso = (e) => { const p=Number(e.pagato)||0; if(e.tipoRimborso==="perdita") return Math.max(0,p-(Number(e.perditaFissa)||0)); return p*(Number(e.percentualeRimborso)||0)/100; };
+const pctConcordato = (e) => { const p=Number(e.pagato)||0; return p>0?Math.round(rimborsoAtteso(e)/p*100):0; };
 const nettoAtteso = (e) => e.coprePayPal ? rimborsoAtteso(e) : rimborsoAtteso(e) * (1 - feePct(e)/100);
 const recReale = (e) => (e.rimborsato && e.pagato>0) ? (Number(e.rimborsoRicevuto)||0)/e.pagato*100 : null;
 
-function statoRecensione(e){ if(e.fatta) return "completata"; const d=giorniDaOggi(e.dataRecensione); if(d==null) return "in-attesa"; if(d<0) return "scaduta"; if(d===0) return "oggi"; return "in-attesa"; }
+function stato(e){ const done=e.senzaRecensione?e.rimborsato:e.fatta; if(done) return "completata"; const d=giorniDaOggi(e.dataRecensione); if(d==null) return "in-attesa"; if(d<0) return "scaduta"; if(d===0) return "oggi"; return "in-attesa"; }
 const ETI = { completata:"Fatta", scaduta:"In ritardo", oggi:"Oggi", "in-attesa":"In attesa" };
-const archiviato = (e) => e.fatta && e.rimborsato;
+const archiviato = (e) => e.senzaRecensione ? e.rimborsato : (e.fatta && e.rimborsato);
 
 function normalizza(e){
   const pagato=Number(e.pagato)||0;
@@ -62,57 +62,55 @@ function normalizza(e){
   const ga=e.giorniAttesa==null?7:Number(e.giorniAttesa);
   const arr=e.dataArrivo||toISO(oggiMezzanotte());
   return { id:e.id||Date.now()+Math.floor(Math.random()*1000), prodotto:e.prodotto||"", ordine:e.ordine||"", handleTelegram:e.handleTelegram||"",
-    pagato, percentualeRimborso:Number(perc)||0, coprePayPal:!!e.coprePayPal, commissionePayPal:e.commissionePayPal==null?6:Number(e.commissionePayPal),
-    dataArrivo:arr, giorniAttesa:ga, recensioneManuale:!!e.recensioneManuale, dataRecensione:e.dataRecensione||addGiorni(arr,ga),
+    pagato, tipoRimborso:e.tipoRimborso==="perdita"?"perdita":"percentuale", percentualeRimborso:Number(perc)||0, perditaFissa:e.perditaFissa==null?0:Number(e.perditaFissa),
+    coprePayPal:!!e.coprePayPal, commissionePayPal:e.commissionePayPal==null?6:Number(e.commissionePayPal),
+    senzaRecensione:!!e.senzaRecensione, dataArrivo:arr, giorniAttesa:ga, recensioneManuale:!!e.recensioneManuale, dataRecensione:e.dataRecensione||addGiorni(arr,ga),
     note:e.note||"", fatta:!!e.fatta, rimborsato:!!e.rimborsato, rimborsoRicevuto:e.rimborsoRicevuto==null?null:Number(e.rimborsoRicevuto) };
 }
 
 function scaricaICS(e){
   const dt=(e.dataRecensione||"").replace(/-/g,""); if(!dt) return;
   const stamp=toISO(new Date()).replace(/-/g,"")+"T090000";
-  const desc=[`Ordine: ${e.ordine||"—"}`, e.handleTelegram?`Agente: ${e.handleTelegram}`:"", `Pagato: ${fmtEuro(e.pagato)}`, `Concordato: ${e.percentualeRimborso}%`, `Netto atteso: ${fmtEuro(nettoAtteso(e))}`, e.note?`Note: ${e.note}`:""].filter(Boolean).join("\\n");
-  const ics=["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//Recensioni Amazon//IT","CALSCALE:GREGORIAN","BEGIN:VEVENT",`UID:${e.id}@recensioni-amazon`,`DTSTAMP:${stamp}`,`DTSTART:${dt}T100000`,`DTEND:${dt}T101500`,`SUMMARY:Recensione Amazon: ${e.prodotto||e.ordine||""}`,`DESCRIPTION:${desc}`,"BEGIN:VALARM","TRIGGER:-PT15M","ACTION:DISPLAY","DESCRIPTION:Promemoria recensione","END:VALARM","END:VEVENT","END:VCALENDAR"].join("\r\n");
+  const titolo=(e.senzaRecensione?"Chiedi rimborso Amazon: ":"Recensione Amazon: ")+(e.prodotto||e.ordine||"");
+  const desc=[`Ordine: ${e.ordine||"—"}`, e.handleTelegram?`Agente: ${e.handleTelegram}`:"", `Pagato: ${fmtEuro(e.pagato)}`, `Rimborso atteso: ${fmtEuro(rimborsoAtteso(e))}`, `Netto atteso: ${fmtEuro(nettoAtteso(e))}`, e.note?`Note: ${e.note}`:""].filter(Boolean).join("\\n");
+  const ics=["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//Recensioni Amazon//IT","CALSCALE:GREGORIAN","BEGIN:VEVENT",`UID:${e.id}@recensioni-amazon`,`DTSTAMP:${stamp}`,`DTSTART:${dt}T100000`,`DTEND:${dt}T101500`,`SUMMARY:${titolo}`,`DESCRIPTION:${desc}`,"BEGIN:VALARM","TRIGGER:-PT15M","ACTION:DISPLAY","DESCRIPTION:Promemoria","END:VALARM","END:VEVENT","END:VCALENDAR"].join("\r\n");
   const url=URL.createObjectURL(new Blob([ics],{type:"text/calendar;charset=utf-8"}));
-  const a=document.createElement("a"); a.href=url; a.download=`recensione-${(e.prodotto||e.ordine||"ordine").slice(0,20)}.ics`;
+  const a=document.createElement("a"); a.href=url; a.download=`${(e.prodotto||e.ordine||"ordine").slice(0,20)}.ics`;
   document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 function esportaCSV(lista){
-  const intest=["Prodotto","Ordine","Agente Telegram","Pagato","Rimborso %","Rimborso atteso","Copre PayPal","Netto atteso","Ricevuto","Recupero reale %","Costo netto","Arrivo","Data recensione","Recensione","Rimborso","Note"];
-  const righe=lista.map((e)=>{ const rr=recReale(e); const costo=e.rimborsato?(e.pagato-(Number(e.rimborsoRicevuto)||0)):(e.pagato-nettoAtteso(e));
-    return [e.prodotto||"",e.ordine||"",e.handleTelegram||"",String(e.pagato).replace(".",","),e.percentualeRimborso+"%",String(rimborsoAtteso(e).toFixed(2)).replace(".",","),e.coprePayPal?"Si":"No",String(nettoAtteso(e).toFixed(2)).replace(".",","),e.rimborsato?String(Number(e.rimborsoRicevuto).toFixed(2)).replace(".",","):"",rr!=null?Math.round(rr)+"%":"",String(costo.toFixed(2)).replace(".",","),fmtData(e.dataArrivo),fmtData(e.dataRecensione),e.fatta?"Fatta":"Da fare",e.rimborsato?"Ricevuto":"In attesa",(e.note||"").replace(/[\r\n;]/g," ")]; });
+  const intest=["Prodotto","Ordine","Agente Telegram","Pagato","Tipo","Rimborso atteso","Copre PayPal","Netto atteso","Ricevuto","Recupero reale %","Costo netto","Promemoria","Recensione","Rimborso","Note"];
+  const righe=lista.map((e)=>{ const rr=recReale(e); const costo=e.rimborsato?(e.pagato-(Number(e.rimborsoRicevuto)||0)):(e.pagato-nettoAtteso(e)); const tipo=e.tipoRimborso==="perdita"?("perdita "+fmtEuro(e.perditaFissa)):(pctConcordato(e)+"%");
+    return [e.prodotto||"",e.ordine||"",e.handleTelegram||"",String(e.pagato).replace(".",","),tipo,String(rimborsoAtteso(e).toFixed(2)).replace(".",","),e.coprePayPal?"Si":"No",String(nettoAtteso(e).toFixed(2)).replace(".",","),e.rimborsato?String(Number(e.rimborsoRicevuto).toFixed(2)).replace(".",","):"",rr!=null?Math.round(rr)+"%":"",String(costo.toFixed(2)).replace(".",","),fmtData(e.dataRecensione),e.senzaRecensione?"—":(e.fatta?"Fatta":"Da fare"),e.rimborsato?"Ricevuto":"In attesa",(e.note||"").replace(/[\r\n;]/g," ")]; });
   const csv="\uFEFF"+[intest,...righe].map((r)=>r.map((c)=>`"${c}"`).join(";")).join("\r\n");
   const url=URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8"}));
   const a=document.createElement("a"); a.href=url; a.download="recensioni-amazon.csv"; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
-const formVuoto = () => ({ id:null, prodotto:"", ordine:"", handleTelegram:"", pagato:"", percentualeRimborso:"", coprePayPal:false, commissionePayPal:"6", dataArrivo:toISO(oggiMezzanotte()), giorniAttesa:"7", recensioneManuale:false, dataRecensione:addGiorni(toISO(oggiMezzanotte()),7), note:"", fatta:false, rimborsato:false, rimborsoRicevuto:null });
+const formVuoto = () => ({ id:null, prodotto:"", ordine:"", handleTelegram:"", pagato:"", tipoRimborso:"percentuale", percentualeRimborso:"", perditaFissa:"", coprePayPal:false, commissionePayPal:"6", senzaRecensione:false, dataArrivo:toISO(oggiMezzanotte()), giorniAttesa:"7", recensioneManuale:false, dataRecensione:addGiorni(toISO(oggiMezzanotte()),7), note:"", fatta:false, rimborsato:false, rimborsoRicevuto:null });
 
-function traduciErrore(e){ const c=(e&&e.code)||""; 
-  if(c.includes("invalid-email")) return "Email non valida."; 
-  if(c.includes("missing-password")) return "Inserisci la password."; 
-  if(c.includes("weak-password")) return "Password troppo corta (minimo 6 caratteri)."; 
-  if(c.includes("email-already-in-use")) return "Email già registrata: usa Accedi."; 
-  if(c.includes("invalid-credential")||c.includes("wrong-password")||c.includes("user-not-found")) return "Email o password errati."; 
-  if(c.includes("network")) return "Connessione assente, riprova."; 
-  if(c.includes("too-many-requests")) return "Troppi tentativi, attendi un minuto."; 
+function traduciErrore(e){ const c=(e&&e.code)||"";
+  if(c.includes("invalid-email")) return "Email non valida.";
+  if(c.includes("missing-password")) return "Inserisci la password.";
+  if(c.includes("weak-password")) return "Password troppo corta (minimo 6 caratteri).";
+  if(c.includes("email-already-in-use")) return "Email già registrata: usa Accedi.";
+  if(c.includes("invalid-credential")||c.includes("wrong-password")||c.includes("user-not-found")) return "Email o password errati.";
+  if(c.includes("network")) return "Connessione assente, riprova.";
+  if(c.includes("too-many-requests")) return "Troppi tentativi, attendi un minuto.";
   return "Errore, riprova."; }
 
-/* ---------- LOGIN ---------- */
 function Login(){
   const [email,setEmail]=useState(""); const [pw,setPw]=useState(""); const [err,setErr]=useState(""); const [busy,setBusy]=useState(false);
   const azione=async(tipo)=>{ setErr(""); setBusy(true);
     try{ if(tipo==="reg") await auth.createUserWithEmailAndPassword(email.trim(),pw); else await auth.signInWithEmailAndPassword(email.trim(),pw); }
     catch(e){ setErr(traduciErrore(e)); } setBusy(false); };
   return (
-    <div className="login">
-      <style>{CSS}</style>
+    <div className="login"><style>{CSS}</style>
       <div className="login-card">
         <div className="login-eyebrow">Promemoria rimborsi</div>
         <h1 className="login-title">Recensioni Amazon</h1>
         <p className="login-sub">Accedi per ritrovare i tuoi ordini su ogni dispositivo.</p>
-        <label className="campo"><span>Email</span>
-          <input type="email" inputMode="email" value={email} onChange={(e)=>setEmail(e.target.value)} placeholder="tuamail@esempio.it"/></label>
-        <label className="campo"><span>Password</span>
-          <input type="password" value={pw} onChange={(e)=>setPw(e.target.value)} placeholder="minimo 6 caratteri"/></label>
+        <label className="campo"><span>Email</span><input type="email" inputMode="email" value={email} onChange={(e)=>setEmail(e.target.value)} placeholder="tuamail@esempio.it"/></label>
+        <label className="campo"><span>Password</span><input type="password" value={pw} onChange={(e)=>setPw(e.target.value)} placeholder="minimo 6 caratteri"/></label>
         {err && <div className="login-err">{err}</div>}
         <button className="salva login-btn" disabled={busy} onClick={()=>azione("login")}>{busy?"Attendi…":"Accedi"}</button>
         <button className="annulla login-btn2" disabled={busy} onClick={()=>azione("reg")}>Prima volta? Crea account</button>
@@ -121,41 +119,24 @@ function Login(){
   );
 }
 
-/* ---------- APP PRINCIPALE ---------- */
 function Main({user}){
-  const [voci,setVoci]=useState([]);
-  const [caricato,setCaricato]=useState(false);
-  const [vista,setVista]=useState("attivi");
-  const [form,setForm]=useState(null);
-  const lastSync=useRef(null);
+  const [voci,setVoci]=useState([]); const [caricato,setCaricato]=useState(false);
+  const [vista,setVista]=useState("attivi"); const [form,setForm]=useState(null); const lastSync=useRef(null);
 
   useEffect(()=>{
     const r=db.ref("users/"+user.uid+"/voci");
     try{ const c=localStorage.getItem("voci_"+user.uid); if(c){ lastSync.current=c; setVoci(JSON.parse(c).map(normalizza)); } }catch(_){}
-    const cb=r.on("value",(snap)=>{
-      const val=snap.val(); const arr=Array.isArray(val)?val:(val?Object.values(val):[]);
-      const json=JSON.stringify(arr);
-      if(json!==lastSync.current){ lastSync.current=json; setVoci(arr.map(normalizza)); try{localStorage.setItem("voci_"+user.uid,json);}catch(_){} }
-      setCaricato(true);
-    },()=>setCaricato(true));
+    const cb=r.on("value",(snap)=>{ const val=snap.val(); const arr=Array.isArray(val)?val:(val?Object.values(val):[]); const json=JSON.stringify(arr);
+      if(json!==lastSync.current){ lastSync.current=json; setVoci(arr.map(normalizza)); try{localStorage.setItem("voci_"+user.uid,json);}catch(_){} } setCaricato(true); },()=>setCaricato(true));
     return ()=>r.off("value",cb);
   },[user.uid]);
-
-  useEffect(()=>{
-    if(!caricato) return;
-    const json=JSON.stringify(voci);
-    if(json===lastSync.current) return;
-    lastSync.current=json;
-    try{localStorage.setItem("voci_"+user.uid,json);}catch(_){}
-    db.ref("users/"+user.uid+"/voci").set(voci).catch(()=>{});
-  },[voci,caricato,user.uid]);
+  useEffect(()=>{ if(!caricato) return; const json=JSON.stringify(voci); if(json===lastSync.current) return; lastSync.current=json; try{localStorage.setItem("voci_"+user.uid,json);}catch(_){} db.ref("users/"+user.uid+"/voci").set(voci).catch(()=>{}); },[voci,caricato,user.uid]);
 
   const salvaForm=()=>{ if(!form.pagato&&!form.prodotto&&!form.ordine) return;
-    const base={ ...form, pagato:numIt(form.pagato), percentualeRimborso:numIt(form.percentualeRimborso), commissionePayPal:numIt(form.commissionePayPal), giorniAttesa:parseInt(form.giorniAttesa)||0,
-      dataRecensione: form.recensioneManuale?form.dataRecensione:addGiorni(form.dataArrivo,parseInt(form.giorniAttesa)||0),
+    const base={ ...form, pagato:numIt(form.pagato), percentualeRimborso:numIt(form.percentualeRimborso), perditaFissa:numIt(form.perditaFissa), commissionePayPal:numIt(form.commissionePayPal), giorniAttesa:parseInt(form.giorniAttesa)||0,
+      dataRecensione: (form.senzaRecensione||form.recensioneManuale)?form.dataRecensione:addGiorni(form.dataArrivo,parseInt(form.giorniAttesa)||0),
       rimborsoRicevuto: form.rimborsoRicevuto==null?null:Number(form.rimborsoRicevuto) };
-    if(form.id) setVoci((v)=>v.map((x)=>x.id===form.id?base:x)); else setVoci((v)=>[{...base,id:Date.now()},...v]);
-    setForm(null); };
+    if(form.id) setVoci((v)=>v.map((x)=>x.id===form.id?base:x)); else setVoci((v)=>[{...base,id:Date.now()},...v]); setForm(null); };
   const elimina=(id)=>setVoci((v)=>v.filter((x)=>x.id!==id));
   const segnaRec=(id,fatta)=>setVoci((v)=>v.map((x)=>x.id===id?{...x,fatta}:x));
   const segnaRimborso=(e)=>{ const def=nettoAtteso(e).toFixed(2).replace(".",","); const r=window.prompt("Quanto hai ricevuto via PayPal? (€)",def); if(r==null) return; setVoci((v)=>v.map((x)=>x.id===e.id?{...x,rimborsato:true,rimborsoRicevuto:numIt(r)}:x)); };
@@ -163,23 +144,21 @@ function Main({user}){
 
   const stat=useMemo(()=>{ const speso=voci.reduce((s,e)=>s+(Number(e.pagato)||0),0); const ricevuto=voci.reduce((s,e)=>s+(e.rimborsato?(Number(e.rimborsoRicevuto)||0):0),0);
     const daRicevere=voci.reduce((s,e)=>s+(!e.rimborsato?nettoAtteso(e):0),0); const conP=voci.filter((e)=>e.pagato>0);
-    const recMedio=conP.length>0?Math.round(conP.reduce((s,e)=>s+(Number(e.percentualeRimborso)||0),0)/conP.length):0; return {speso,ricevuto,daRicevere,recMedio}; },[voci]);
+    const recMedio=conP.length>0?Math.round(conP.reduce((s,e)=>s+pctConcordato(e),0)/conP.length):0; return {speso,ricevuto,daRicevere,recMedio}; },[voci]);
 
-  const daPubblicare=voci.filter((e)=>!e.fatta&&["oggi","scaduta"].includes(statoRecensione(e)));
-  const inRitardo=daPubblicare.filter((e)=>statoRecensione(e)==="scaduta").length;
+  const daFare=voci.filter((e)=>{ const done=e.senzaRecensione?e.rimborsato:e.fatta; return !done && ["oggi","scaduta"].includes(stato(e)); });
+  const inRitardo=daFare.filter((e)=>stato(e)==="scaduta").length;
   const lista=useMemo(()=>{ let l=[...voci]; if(vista==="attivi") l=l.filter((e)=>!archiviato(e)); if(vista==="archivio") l=l.filter((e)=>archiviato(e)); l.sort((a,b)=>(a.dataRecensione||"").localeCompare(b.dataRecensione||"")); return l; },[voci,vista]);
 
-  const fp = form?{ pagato:numIt(form.pagato), percentualeRimborso:numIt(form.percentualeRimborso), coprePayPal:form.coprePayPal, commissionePayPal:numIt(form.commissionePayPal) }:null;
+  const fp = form?{ pagato:numIt(form.pagato), tipoRimborso:form.tipoRimborso, percentualeRimborso:numIt(form.percentualeRimborso), perditaFissa:numIt(form.perditaFissa), coprePayPal:form.coprePayPal, commissionePayPal:numIt(form.commissionePayPal) }:null;
 
   if(!caricato) return (<div className="app"><style>{CSS}</style><div className="loading">Sincronizzo i tuoi dati…</div></div>);
 
   return (
-    <div className="app">
-      <style>{CSS}</style>
+    <div className="app"><style>{CSS}</style>
       <header className="hd">
         <div className="hd-top"><span className="hd-eyebrow">Promemoria rimborsi</span><button className="logout" onClick={()=>auth.signOut()}>Esci</button></div>
-        <div className="hd-row"><h1 className="hd-title">Recensioni Amazon</h1>
-          <div className="hd-rec"><span className="hd-rec-num">{stat.recMedio}%</span><span className="hd-rec-lab">media concordata</span></div></div>
+        <div className="hd-row"><h1 className="hd-title">Recensioni Amazon</h1><div className="hd-rec"><span className="hd-rec-num">{stat.recMedio}%</span><span className="hd-rec-lab">media concordata</span></div></div>
         <div className="stats">
           <div className="stat"><span className="stat-lab">Speso</span><span className="stat-val">{fmtEuro(stat.speso)}</span></div>
           <div className="stat"><span className="stat-lab">Ricevuto</span><span className="stat-val green">{fmtEuro(stat.ricevuto)}</span></div>
@@ -187,36 +166,37 @@ function Main({user}){
         </div>
       </header>
 
-      {daPubblicare.length>0 && (<div className="alert"><strong>{daPubblicare.length}</strong> recensione/i da pubblicare{inRitardo>0 && <> (di cui <strong>{inRitardo}</strong> in ritardo)</>}.</div>)}
+      {daFare.length>0 && (<div className="alert"><strong>{daFare.length}</strong> promemoria in scadenza (recensioni o rimborsi){inRitardo>0 && <>, di cui <strong>{inRitardo}</strong> in ritardo</>}.</div>)}
 
       <div className="tabs">{[["attivi","Attivi"],["archivio","Archivio"],["tutti","Tutti"]].map(([k,lab])=>(<button key={k} className={"tab"+(vista===k?" on":"")} onClick={()=>setVista(k)}>{lab}</button>))}</div>
 
       <main className="lista">
         {lista.length===0 && (<div className="vuoto">Nessun ordine qui.<br/>Tocca <strong>＋ Aggiungi ordine</strong> per iniziare.</div>)}
-        {lista.map((e)=>{ const st=statoRecensione(e); const perc=e.rimborsato?Math.round(recReale(e)):Math.round(e.percentualeRimborso); const gg=giorniDaOggi(e.dataRecensione);
-          let recTxt=e.fatta?"Recensione fatta":gg===0?"Recensione oggi":gg<0?`Recensione in ritardo ${Math.abs(gg)}g`:gg===1?"Recensione tra 1g":`Recensione tra ${gg}g`;
-          const recCls=e.fatta?"k-ok":st==="oggi"?"k-oggi":st==="scaduta"?"k-scaduta":""; const diff=e.rimborsato?(Number(e.rimborsoRicevuto)||0)-nettoAtteso(e):null;
+        {lista.map((e)=>{ const st=stato(e); const perc=e.rimborsato?Math.round(recReale(e)):pctConcordato(e); const gg=giorniDaOggi(e.dataRecensione);
+          let recTxt; if(e.senzaRecensione){ recTxt=e.rimborsato?"Rimborso ricevuto":gg===0?"Chiedi rimborso oggi":gg<0?`Rimborso in ritardo ${Math.abs(gg)}g`:gg===1?"Chiedi rimborso tra 1g":`Chiedi rimborso tra ${gg}g`; }
+            else { recTxt=e.fatta?"Recensione fatta":gg===0?"Recensione oggi":gg<0?`Recensione in ritardo ${Math.abs(gg)}g`:gg===1?"Recensione tra 1g":`Recensione tra ${gg}g`; }
+          const recCls=st==="completata"?"k-ok":st==="oggi"?"k-oggi":st==="scaduta"?"k-scaduta":""; const diff=e.rimborsato?(Number(e.rimborsoRicevuto)||0)-nettoAtteso(e):null;
           const cardCls=archiviato(e)?"st-completata":st==="scaduta"?"st-scaduta":st==="oggi"?"st-oggi":"";
           return (
             <article key={e.id} className={"card "+cardCls}>
               <div className="card-top"><div className="card-name">{e.prodotto||"(senza nome)"}</div><span className={"badge b-"+st}>{ETI[st]}</span></div>
-              <div className="metarow"><span className="card-ordine">Ordine {e.ordine||"—"}</span>{tgUser(e.handleTelegram) && <a className="tg" href={`https://t.me/${tgUser(e.handleTelegram)}`} target="_blank" rel="noreferrer">👤 @{tgUser(e.handleTelegram)}</a>}</div>
+              <div className="metarow"><span className="card-ordine">Ordine {e.ordine||"—"}</span>{e.senzaRecensione && <span className="tag-no-rec">senza recensione</span>}{tgUser(e.handleTelegram) && <a className="tg" href={`https://t.me/${tgUser(e.handleTelegram)}`} target="_blank" rel="noreferrer">👤 @{tgUser(e.handleTelegram)}</a>}</div>
               <div className="recbar"><div className="recbar-track"><div className="recbar-fill" style={{width:Math.min(100,perc)+"%"}}/></div><span className="recbar-pct">{perc}%</span></div>
               <span className={"ppchip "+(e.coprePayPal?"pp-ok":"pp-no")}>{e.coprePayPal?"Tasse PayPal coperte":`PayPal −${feePct(e)}% a tuo carico`}</span>
               <div className="cifre">
                 <div><span className="cifra-lab">Pagato</span><span className="cifra-val">{fmtEuro(e.pagato)}</span></div>
-                <div><span className="cifra-lab">Concordato {e.percentualeRimborso}%</span><span className="cifra-val">{fmtEuro(rimborsoAtteso(e))}</span></div>
+                <div><span className="cifra-lab">{e.tipoRimborso==="perdita"?`Perdita ${fmtEuro(e.perditaFissa)}`:`Concordato ${pctConcordato(e)}%`}</span><span className="cifra-val">{fmtEuro(rimborsoAtteso(e))}</span></div>
                 <div><span className="cifra-lab">Netto atteso</span><span className="cifra-val">{fmtEuro(nettoAtteso(e))}</span></div>
                 {e.rimborsato?<div><span className="cifra-lab">Ricevuto</span><span className="cifra-val gold">{fmtEuro(e.rimborsoRicevuto)}</span></div>:<div><span className="cifra-lab">Costo netto</span><span className="cifra-val">{fmtEuro(e.pagato-nettoAtteso(e))}</span></div>}
               </div>
               {e.rimborsato && (<div className={"esito "+(diff>=-0.01?"ok":"ko")}>{diff>=-0.01?`✓ Ricevuto come previsto`:`${fmtEuro(diff)} rispetto all'atteso`} · recupero reale {Math.round(recReale(e))}%</div>)}
-              <div className="checks"><span className={"chk "+recCls}>{recTxt}</span><span className={"chk "+(e.rimborsato?"k-ok":"k-wait")}>{e.rimborsato?"Rimborso ricevuto":"Rimborso da ricevere"}</span></div>
+              <div className="checks"><span className={"chk "+recCls}>{recTxt}</span>{!e.senzaRecensione && <span className={"chk "+(e.rimborsato?"k-ok":"k-wait")}>{e.rimborsato?"Rimborso ricevuto":"Rimborso da ricevere"}</span>}</div>
               {e.note && <div className="card-note">{e.note}</div>}
               <div className="azioni">
-                {!e.fatta?<button className="az az-ok" onClick={()=>segnaRec(e.id,true)}>✓ Recensione</button>:<button className="az" onClick={()=>segnaRec(e.id,false)}>↺ Recensione</button>}
+                {!e.senzaRecensione && (!e.fatta?<button className="az az-ok" onClick={()=>segnaRec(e.id,true)}>✓ Recensione</button>:<button className="az" onClick={()=>segnaRec(e.id,false)}>↺ Recensione</button>)}
                 {!e.rimborsato?<button className="az az-gold" onClick={()=>segnaRimborso(e)}>💰 Rimborso</button>:<button className="az" onClick={()=>annullaRimborso(e.id)}>↺ Rimborso</button>}
                 <button className="az" onClick={()=>scaricaICS(e)}>🔔</button>
-                <button className="az" onClick={()=>setForm({...e, pagato:String(e.pagato), percentualeRimborso:String(e.percentualeRimborso), commissionePayPal:String(e.commissionePayPal), giorniAttesa:String(e.giorniAttesa)})}>✎</button>
+                <button className="az" onClick={()=>setForm({...e, pagato:String(e.pagato), percentualeRimborso:String(e.percentualeRimborso), perditaFissa:String(e.perditaFissa), commissionePayPal:String(e.commissionePayPal), giorniAttesa:String(e.giorniAttesa)})}>✎</button>
                 <button className="az az-del" onClick={()=>elimina(e.id)}>Elimina</button>
               </div>
             </article>
@@ -232,23 +212,35 @@ function Main({user}){
             <label className="campo"><span>Prodotto</span><input value={form.prodotto} onChange={(ev)=>setForm({...form,prodotto:ev.target.value})} placeholder="Es. Cuffie bluetooth"/></label>
             <label className="campo"><span>Numero ordine</span><input value={form.ordine} onChange={(ev)=>setForm({...form,ordine:ev.target.value})} placeholder="123-4567890-1234567"/></label>
             <label className="campo"><span>Handle Telegram agente</span><input value={form.handleTelegram} onChange={(ev)=>setForm({...form,handleTelegram:ev.target.value})} placeholder="@agente"/></label>
-            <div className="campo-row">
-              <label className="campo"><span>Pagato (€)</span><input inputMode="decimal" value={form.pagato} onChange={(ev)=>setForm({...form,pagato:ev.target.value})} placeholder="29,99"/></label>
-              <label className="campo"><span>Rimborso concordato (%)</span><input inputMode="decimal" value={form.percentualeRimborso} onChange={(ev)=>setForm({...form,percentualeRimborso:ev.target.value})} placeholder="80"/></label>
+            <label className="campo"><span>Pagato (€)</span><input inputMode="decimal" value={form.pagato} onChange={(ev)=>setForm({...form,pagato:ev.target.value})} placeholder="132,00"/></label>
+
+            <div className="campo"><span>Come è definito il rimborso?</span>
+              <div className="pills"><button className={"pill"+(form.tipoRimborso!=="perdita"?" on":"")} onClick={()=>setForm({...form,tipoRimborso:"percentuale"})}>Percentuale %</button><button className={"pill"+(form.tipoRimborso==="perdita"?" on":"")} onClick={()=>setForm({...form,tipoRimborso:"perdita"})}>Perdita fissa €</button></div>
             </div>
+            {form.tipoRimborso!=="perdita"
+              ? <label className="campo"><span>Rimborso concordato (%)</span><input inputMode="decimal" value={form.percentualeRimborso} onChange={(ev)=>setForm({...form,percentualeRimborso:ev.target.value})} placeholder="80"/></label>
+              : <label className="campo"><span>Quanto ci perdi (€)</span><input inputMode="decimal" value={form.perditaFissa} onChange={(ev)=>setForm({...form,perditaFissa:ev.target.value})} placeholder="10"/></label>}
+
             <div className="campo"><span>Il rimborso copre le tasse PayPal?</span>
               <div className="pills"><button className={"pill"+(form.coprePayPal?" on":"")} onClick={()=>setForm({...form,coprePayPal:true})}>Sì, coperte</button><button className={"pill"+(!form.coprePayPal?" on":"")} onClick={()=>setForm({...form,coprePayPal:false})}>No, a mio carico</button></div>
             </div>
             <label className="campo"><span>Commissione PayPal (%)</span><input inputMode="decimal" value={form.commissionePayPal} onChange={(ev)=>setForm({...form,commissionePayPal:ev.target.value})} placeholder="6"/></label>
-            {fp.pagato>0 && fp.percentualeRimborso>0 && (<div className="anteprima-rec">Rimborso atteso: <strong>{fmtEuro(rimborsoAtteso(fp))}</strong> · Netto dopo PayPal: <strong>{fmtEuro(nettoAtteso(fp))}</strong> · Costo netto: {fmtEuro(fp.pagato-nettoAtteso(fp))}</div>)}
-            <label className="campo"><span>Arrivo previsto</span><input type="date" value={form.dataArrivo} onChange={(ev)=>setForm({...form,dataArrivo:ev.target.value})}/></label>
-            <div className="campo"><span>Promemoria recensione</span>
-              <div className="pills"><button className={"pill"+(!form.recensioneManuale?" on":"")} onClick={()=>setForm({...form,recensioneManuale:false})}>Automatica</button><button className={"pill"+(form.recensioneManuale?" on":"")} onClick={()=>setForm({...form,recensioneManuale:true, dataRecensione: form.dataRecensione||addGiorni(form.dataArrivo,form.giorniAttesa)})}>Scelgo io</button></div>
+            {fp.pagato>0 && rimborsoAtteso(fp)>0 && (<div className="anteprima-rec">Rimborso atteso: <strong>{fmtEuro(rimborsoAtteso(fp))}</strong> · Netto dopo PayPal: <strong>{fmtEuro(nettoAtteso(fp))}</strong> · Costo netto: {fmtEuro(fp.pagato-nettoAtteso(fp))}</div>)}
+
+            <div className="campo"><span>Questo ordine richiede una recensione?</span>
+              <div className="pills"><button className={"pill"+(!form.senzaRecensione?" on":"")} onClick={()=>setForm({...form,senzaRecensione:false})}>Sì, con recensione</button><button className={"pill"+(form.senzaRecensione?" on":"")} onClick={()=>setForm({...form,senzaRecensione:true, dataRecensione:form.dataRecensione||addGiorni(form.dataArrivo,form.giorniAttesa)})}>No, solo rimborso</button></div>
             </div>
-            {!form.recensioneManuale ? (<React.Fragment>
-              <label className="campo"><span>Giorni dopo l'arrivo</span><input inputMode="numeric" value={form.giorniAttesa} onChange={(ev)=>setForm({...form,giorniAttesa:ev.target.value})}/></label>
-              <div className="anteprima-data">Promemoria recensione il <strong>{fmtData(addGiorni(form.dataArrivo,form.giorniAttesa))}</strong></div>
-            </React.Fragment>) : (<label className="campo"><span>Data recensione</span><input type="date" value={form.dataRecensione} onChange={(ev)=>setForm({...form,dataRecensione:ev.target.value})}/></label>)}
+
+            {form.senzaRecensione ? (
+              <label className="campo"><span>Quando chiedere il rimborso</span><input type="date" value={form.dataRecensione} onChange={(ev)=>setForm({...form,dataRecensione:ev.target.value})}/></label>
+            ) : (
+              <React.Fragment>
+                <label className="campo"><span>Arrivo previsto</span><input type="date" value={form.dataArrivo} onChange={(ev)=>setForm({...form,dataArrivo:ev.target.value})}/></label>
+                <div className="campo"><span>Promemoria recensione</span><div className="pills"><button className={"pill"+(!form.recensioneManuale?" on":"")} onClick={()=>setForm({...form,recensioneManuale:false})}>Automatica</button><button className={"pill"+(form.recensioneManuale?" on":"")} onClick={()=>setForm({...form,recensioneManuale:true, dataRecensione:form.dataRecensione||addGiorni(form.dataArrivo,form.giorniAttesa)})}>Scelgo io</button></div></div>
+                {!form.recensioneManuale ? (<React.Fragment><label className="campo"><span>Giorni dopo l'arrivo</span><input inputMode="numeric" value={form.giorniAttesa} onChange={(ev)=>setForm({...form,giorniAttesa:ev.target.value})}/></label><div className="anteprima-data">Promemoria recensione il <strong>{fmtData(addGiorni(form.dataArrivo,form.giorniAttesa))}</strong></div></React.Fragment>) : (<label className="campo"><span>Data recensione</span><input type="date" value={form.dataRecensione} onChange={(ev)=>setForm({...form,dataRecensione:ev.target.value})}/></label>)}
+              </React.Fragment>
+            )}
+
             <label className="campo"><span>Note</span><textarea rows={2} value={form.note} onChange={(ev)=>setForm({...form,note:ev.target.value})}/></label>
             <div className="sheet-btns"><button className="annulla" onClick={()=>setForm(null)}>Annulla</button><button className="salva" onClick={salvaForm}>Salva</button></div>
           </div>
@@ -299,8 +291,9 @@ const CSS = `
 .card.st-oggi{ border-left-color:var(--gold); } .card.st-scaduta{ border-left-color:var(--coral); } .card.st-completata{ border-left-color:var(--green); opacity:.82; }
 .card-top{ display:flex; justify-content:space-between; align-items:center; gap:8px; }
 .card-name{ font-size:16px; font-weight:700; letter-spacing:-.01em; }
-.metarow{ display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-top:3px; }
+.metarow{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:3px; }
 .card-ordine{ font-size:12px; color:var(--ink2); font-variant-numeric:tabular-nums; }
+.tag-no-rec{ font-size:11px; font-weight:700; color:#4A6275; background:#EBF0F4; padding:2px 8px; border-radius:20px; }
 .tg{ font-size:12.5px; color:#2E6F9E; font-weight:700; text-decoration:none; }
 .badge{ font-size:11px; font-weight:700; padding:3px 9px; border-radius:20px; white-space:nowrap; }
 .b-oggi{ background:var(--gold-bg); color:#8A5D10; } .b-scaduta{ background:var(--coral-bg); color:#A4322A; } .b-completata{ background:var(--green-bg); color:#1F6B4C; } .b-in-attesa{ background:#EBF0F4; color:#4A6275; }
