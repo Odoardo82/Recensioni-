@@ -60,9 +60,10 @@ const pctConcordato = (e) => { const p=Number(e.pagato)||0; return p>0?Math.roun
 const nettoAtteso = (e) => e.coprePayPal ? rimborsoAtteso(e) : rimborsoAtteso(e) * (1 - feePct(e)/100);
 const recReale = (e) => (e.rimborsato && e.pagato>0) ? (Number(e.rimborsoRicevuto)||0)/e.pagato*100 : null;
 
-function stato(e){ const done=e.senzaRecensione?e.rimborsato:e.fatta; if(done) return "completata"; const d=giorniDaOggi(e.dataRecensione); if(d==null) return "in-attesa"; if(d<0) return "scaduta"; if(d===0) return "oggi"; return "in-attesa"; }
-const ETI = { completata:"Fatta", scaduta:"In ritardo", oggi:"Oggi", "in-attesa":"In attesa" };
-const archiviato = (e) => e.senzaRecensione ? e.rimborsato : (e.fatta && e.rimborsato);
+function dateStatus(iso){ const d=giorniDaOggi(iso); if(d==null) return "in-attesa"; if(d<0) return "scaduta"; if(d===0) return "oggi"; return "in-attesa"; }
+function fase(e){ if(e.rimborsato) return "archiviato"; if(!e.senzaRecensione && e.fatta) return "attesa-rimborso"; if(e.arrivato) return "arrivato"; return "in-arrivo"; }
+const archiviato = (e) => !!e.rimborsato;
+const normUrl = (u) => { u=(u||"").trim(); if(!u) return ""; return /^https?:\/\//i.test(u)?u:"https://"+u; };
 
 function normalizza(e){
   const pagato=Number(e.pagato)||0;
@@ -74,6 +75,7 @@ function normalizza(e){
     pagato, tipoRimborso:e.tipoRimborso==="perdita"?"perdita":"percentuale", percentualeRimborso:Number(perc)||0, perditaFissa:e.perditaFissa==null?0:Number(e.perditaFissa),
     coprePayPal:!!e.coprePayPal, commissionePayPal:e.commissionePayPal==null?6:Number(e.commissionePayPal),
     senzaRecensione:!!e.senzaRecensione, dataArrivo:arr, giorniAttesa:ga, recensioneManuale:!!e.recensioneManuale, dataRecensione:e.dataRecensione||addGiorni(arr,ga),
+    arrivato: (!!e.arrivato)||(!!e.dataArrivoReale)||(!!e.fatta)||(!!e.rimborsato), dataArrivoReale:e.dataArrivoReale||null, linkRecensione:e.linkRecensione||"",
     note:e.note||"", fatta:!!e.fatta, rimborsato:!!e.rimborsato, rimborsoRicevuto:e.rimborsoRicevuto==null?null:Number(e.rimborsoRicevuto) };
 }
 
@@ -148,6 +150,10 @@ function Main({user}){
     if(form.id) setVoci((v)=>v.map((x)=>x.id===form.id?base:x)); else setVoci((v)=>[{...base,id:Date.now()},...v]); setForm(null); };
   const elimina=(id)=>setVoci((v)=>v.filter((x)=>x.id!==id));
   const segnaRec=(id,fatta)=>setVoci((v)=>v.map((x)=>x.id===id?{...x,fatta}:x));
+  const segnaArrivato=(e)=>setVoci((v)=>v.map((x)=>{ if(x.id!==e.id) return x; const today=toISO(oggiMezzanotte()); const nuovaRec=(!x.senzaRecensione&&!x.recensioneManuale)?addGiorni(today,x.giorniAttesa):x.dataRecensione; return {...x,arrivato:true,dataArrivoReale:today,dataRecensione:nuovaRec}; }));
+  const annullaArrivo=(id)=>setVoci((v)=>v.map((x)=>x.id===id?{...x,arrivato:false,dataArrivoReale:null}:x));
+  const inviaRecensione=(e)=>{ const link=window.prompt("Incolla il link della recensione (puoi anche lasciarlo vuoto):", e.linkRecensione||""); if(link===null) return; setVoci((v)=>v.map((x)=>x.id===e.id?{...x,fatta:true,linkRecensione:link.trim()}:x)); };
+  const annullaRecensione=(id)=>setVoci((v)=>v.map((x)=>x.id===id?{...x,fatta:false}:x));
   const segnaRimborso=(e)=>{ const def=nettoAtteso(e).toFixed(2).replace(".",","); const r=window.prompt("Quanto hai ricevuto via PayPal? (€)",def); if(r==null) return; setVoci((v)=>v.map((x)=>x.id===e.id?{...x,rimborsato:true,rimborsoRicevuto:numIt(r)}:x)); };
   const annullaRimborso=(id)=>setVoci((v)=>v.map((x)=>x.id===id?{...x,rimborsato:false,rimborsoRicevuto:null}:x));
 
@@ -155,8 +161,8 @@ function Main({user}){
     const daRicevere=voci.reduce((s,e)=>s+(!e.rimborsato?nettoAtteso(e):0),0); const conP=voci.filter((e)=>e.pagato>0);
     const recMedio=conP.length>0?Math.round(conP.reduce((s,e)=>s+pctConcordato(e),0)/conP.length):0; return {speso,ricevuto,daRicevere,recMedio}; },[voci]);
 
-  const daFare=voci.filter((e)=>{ const done=e.senzaRecensione?e.rimborsato:e.fatta; return !done && ["oggi","scaduta"].includes(stato(e)); });
-  const inRitardo=daFare.filter((e)=>stato(e)==="scaduta").length;
+  const daFare=voci.filter((e)=>{ if(e.rimborsato||!e.arrivato) return false; const notActed=e.senzaRecensione?true:!e.fatta; if(!notActed) return false; const d=giorniDaOggi(e.dataRecensione); return d!=null && d<=0; });
+  const inRitardo=daFare.filter((e)=>giorniDaOggi(e.dataRecensione)<0).length;
   const lista=useMemo(()=>{ let l=[...voci]; if(vista==="attivi") l=l.filter((e)=>!archiviato(e)); if(vista==="archivio") l=l.filter((e)=>archiviato(e)); l.sort((a,b)=>(a.dataRecensione||"").localeCompare(b.dataRecensione||"")); return l; },[voci,vista]);
 
   const fp = form?{ pagato:numIt(form.pagato), tipoRimborso:form.tipoRimborso, percentualeRimborso:numIt(form.percentualeRimborso), perditaFissa:numIt(form.perditaFissa), coprePayPal:form.coprePayPal, commissionePayPal:numIt(form.commissionePayPal) }:null;
@@ -181,14 +187,19 @@ function Main({user}){
 
       <main className="lista">
         {lista.length===0 && (<div className="vuoto">Nessun ordine qui.<br/>Tocca <strong>＋ Aggiungi ordine</strong> per iniziare.</div>)}
-        {lista.map((e)=>{ const st=stato(e); const perc=e.rimborsato?Math.round(recReale(e)):pctConcordato(e); const gg=giorniDaOggi(e.dataRecensione);
-          let recTxt; if(e.senzaRecensione){ recTxt=e.rimborsato?"Rimborso ricevuto":gg===0?"Chiedi rimborso oggi":gg<0?`Rimborso in ritardo ${Math.abs(gg)}g`:gg===1?"Chiedi rimborso tra 1g":`Chiedi rimborso tra ${gg}g`; }
-            else { recTxt=e.fatta?"Recensione fatta":gg===0?"Recensione oggi":gg<0?`Recensione in ritardo ${Math.abs(gg)}g`:gg===1?"Recensione tra 1g":`Recensione tra ${gg}g`; }
-          const recCls=st==="completata"?"k-ok":st==="oggi"?"k-oggi":st==="scaduta"?"k-scaduta":""; const diff=e.rimborsato?(Number(e.rimborsoRicevuto)||0)-nettoAtteso(e):null;
-          const cardCls=archiviato(e)?"st-completata":st==="scaduta"?"st-scaduta":st==="oggi"?"st-oggi":"";
+        {lista.map((e)=>{ const f=fase(e); const perc=e.rimborsato?Math.round(recReale(e)):pctConcordato(e); const ds=dateStatus(e.dataRecensione); const diff=e.rimborsato?(Number(e.rimborsoRicevuto)||0)-nettoAtteso(e):null;
+          const badgeTxt=f==="in-arrivo"?"In arrivo":f==="arrivato"?(e.senzaRecensione?"Da rimborsare":"Da recensire"):f==="attesa-rimborso"?"Attesa rimborso":"Archiviato";
+          const badgeCls=f==="archiviato"?"b-completata":f==="attesa-rimborso"?"b-attesa":f==="arrivato"?(ds==="scaduta"?"b-scaduta":ds==="oggi"?"b-oggi":"b-in-attesa"):"b-in-attesa";
+          const cardCls=f==="archiviato"?"st-completata":f==="attesa-rimborso"?"st-attesa":f==="arrivato"?(ds==="scaduta"?"st-scaduta":ds==="oggi"?"st-oggi":""):"";
+          const chips=[];
+          if(f==="in-arrivo"){ const d=giorniDaOggi(e.dataArrivo); chips.push({t:d==null?"Arrivo previsto":d>0?`Arrivo previsto tra ${d}g`:d===0?"Arrivo previsto oggi":`Previsto ${Math.abs(d)}g fa — è arrivato?`, c:d<0?"k-oggi":""}); }
+          if(e.dataArrivoReale && f!=="in-arrivo"){ const da=giorniDaOggi(e.dataArrivoReale); const n=Math.abs(da); chips.push({t:da===0?"Arrivato oggi":n===1?"Arrivato 1 giorno fa":`Arrivato ${n} giorni fa`, c:""}); }
+          if(f==="arrivato"){ const d=giorniDaOggi(e.dataRecensione); const w=e.senzaRecensione?"rimborso":"recensione"; const t=d===0?(e.senzaRecensione?"Chiedi rimborso oggi":"Recensione oggi"):d<0?(e.senzaRecensione?`Rimborso in ritardo ${Math.abs(d)}g`:`Recensione in ritardo ${Math.abs(d)}g`):d===1?(e.senzaRecensione?"Chiedi rimborso tra 1g":"Recensione tra 1g"):(e.senzaRecensione?`Chiedi rimborso tra ${d}g`:`Recensione tra ${d}g`); chips.push({t, c:ds==="oggi"?"k-oggi":ds==="scaduta"?"k-scaduta":""}); }
+          if(f==="attesa-rimborso"){ chips.push({t:"Recensione inviata", c:"k-ok"}); chips.push({t:"Rimborso da ricevere", c:"k-wait"}); }
+          if(f==="archiviato"){ if(!e.senzaRecensione) chips.push({t:"Recensione inviata", c:"k-ok"}); chips.push({t:"Rimborso ricevuto", c:"k-ok"}); }
           return (
             <article key={e.id} className={"card "+cardCls}>
-              <div className="card-top"><div className="card-name">{e.prodotto||"(senza nome)"}</div><span className={"badge b-"+st}>{ETI[st]}</span></div>
+              <div className="card-top"><div className="card-name">{e.prodotto||"(senza nome)"}</div><span className={"badge "+badgeCls}>{badgeTxt}</span></div>
               <div className="metarow"><span className="card-ordine">Ordine {e.ordine||"—"}</span>{e.senzaRecensione && <span className="tag-no-rec">senza recensione</span>}{tgUser(e.handleTelegram) && <a className="tg" href={`https://t.me/${tgUser(e.handleTelegram)}`} target="_blank" rel="noreferrer">👤 @{tgUser(e.handleTelegram)}</a>}</div>
               <div className="recbar"><div className="recbar-track"><div className="recbar-fill" style={{width:Math.min(100,perc)+"%"}}/></div><span className="recbar-pct">{perc}%</span></div>
               <span className={"ppchip "+(e.coprePayPal?"pp-ok":"pp-no")}>{e.coprePayPal?"Tasse PayPal coperte":`PayPal −${feePct(e)}% a tuo carico`}</span>
@@ -199,11 +210,17 @@ function Main({user}){
                 {e.rimborsato?<div><span className="cifra-lab">Ricevuto</span><span className="cifra-val gold">{fmtEuro(e.rimborsoRicevuto)}</span></div>:<div><span className="cifra-lab">Costo netto</span><span className="cifra-val">{fmtEuro(e.pagato-nettoAtteso(e))}</span></div>}
               </div>
               {e.rimborsato && (<div className={"esito "+(diff>=-0.01?"ok":"ko")}>{diff>=-0.01?`✓ Ricevuto come previsto`:`${fmtEuro(diff)} rispetto all'atteso`} · recupero reale {Math.round(recReale(e))}%</div>)}
-              <div className="checks"><span className={"chk "+recCls}>{recTxt}</span>{!e.senzaRecensione && <span className={"chk "+(e.rimborsato?"k-ok":"k-wait")}>{e.rimborsato?"Rimborso ricevuto":"Rimborso da ricevere"}</span>}</div>
+              <div className="checks">{chips.map((c,i)=>(<span key={i} className={"chk "+c.c}>{c.t}</span>))}</div>
+              {normUrl(e.linkRecensione) && <a className="link-rec" href={normUrl(e.linkRecensione)} target="_blank" rel="noreferrer">🔗 Vedi recensione</a>}
               {e.note && <div className="card-note">{e.note}</div>}
               <div className="azioni">
-                {!e.senzaRecensione && (!e.fatta?<button className="az az-ok" onClick={()=>segnaRec(e.id,true)}>✓ Recensione</button>:<button className="az" onClick={()=>segnaRec(e.id,false)}>↺ Recensione</button>)}
-                {!e.rimborsato?<button className="az az-gold" onClick={()=>segnaRimborso(e)}>💰 Rimborso</button>:<button className="az" onClick={()=>annullaRimborso(e.id)}>↺ Rimborso</button>}
+                {f==="in-arrivo" && <button className="az az-gold" onClick={()=>segnaArrivato(e)}>📦 Prodotto arrivato</button>}
+                {f==="arrivato" && !e.senzaRecensione && <button className="az az-ok" onClick={()=>inviaRecensione(e)}>✓ Recensione inviata</button>}
+                {f==="arrivato" && e.senzaRecensione && <button className="az az-gold" onClick={()=>segnaRimborso(e)}>💰 Rimborso ricevuto</button>}
+                {f==="arrivato" && <button className="az" onClick={()=>annullaArrivo(e.id)}>↺ Non arrivato</button>}
+                {f==="attesa-rimborso" && <button className="az az-gold" onClick={()=>segnaRimborso(e)}>💰 Rimborso ricevuto</button>}
+                {f==="attesa-rimborso" && <button className="az" onClick={()=>annullaRecensione(e.id)}>↺ Annulla recensione</button>}
+                {f==="archiviato" && <button className="az" onClick={()=>annullaRimborso(e.id)}>↺ Riapri</button>}
                 <button className="az" onClick={()=>scaricaICS(e)}>🔔</button>
                 <button className="az" onClick={()=>setForm({...e, pagato:numStr(e.pagato), percentualeRimborso:numStr(e.percentualeRimborso), perditaFissa:numStr(e.perditaFissa), commissionePayPal:numStr(e.commissionePayPal), giorniAttesa:String(e.giorniAttesa)})}>✎</button>
                 <button className="az az-del" onClick={()=>elimina(e.id)}>Elimina</button>
@@ -300,7 +317,9 @@ const CSS = `
 .lista{ padding:8px 14px 0; }
 .vuoto{ text-align:center; color:var(--ink2); padding:40px 16px; line-height:1.6; font-size:15px; }
 .card{ background:var(--card); border:1px solid var(--line); border-radius:16px; padding:14px; margin-bottom:12px; border-left:5px solid var(--line); }
-.card.st-oggi{ border-left-color:var(--gold); } .card.st-scaduta{ border-left-color:var(--coral); } .card.st-completata{ border-left-color:var(--green); opacity:.82; }
+.card.st-oggi{ border-left-color:var(--gold); } .card.st-scaduta{ border-left-color:var(--coral); } .card.st-attesa{ border-left-color:var(--gold); } .card.st-completata{ border-left-color:var(--green); opacity:.82; }
+.b-attesa{ background:var(--gold-bg); color:#8A5D10; }
+.link-rec{ display:inline-block; margin-top:10px; font-size:13px; font-weight:700; color:#2E6F9E; text-decoration:none; background:#EAF1F6; padding:8px 12px; border-radius:9px; }
 .card-top{ display:flex; justify-content:space-between; align-items:center; gap:8px; }
 .card-name{ font-size:16px; font-weight:700; letter-spacing:-.01em; }
 .metarow{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:3px; }
