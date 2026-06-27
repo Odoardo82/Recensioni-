@@ -3,12 +3,15 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<meta name="theme-color" content="#16212B" />
+<meta name="theme-color" content="#14202B" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="apple-mobile-web-app-title" content="Amz Review" />
 <title>Amz Review</title>
-<style> html,body{margin:0;padding:0;background:#EAEEEC;} #root{min-height:100vh;} </style>
+<style> html,body{margin:0;padding:0;background:#ECEFEC;} #root{min-height:100vh;} </style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://www.gstatic.com/firebasejs/12.15.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/12.15.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/12.15.0/firebase-database-compat.js"></script>
@@ -42,17 +45,10 @@ const addGiorni = (iso,n) => { const d=parseISO(iso); if(!d) return null; d.setD
 const giorniDaOggi = (iso) => { const d=parseISO(iso); if(!d) return null; return Math.round((d-oggiMezzanotte())/86400000); };
 const fmtData = (iso) => { const d=parseISO(iso); if(!d) return "—"; return d.toLocaleDateString("it-IT",{day:"2-digit",month:"2-digit",year:"numeric"}); };
 const fmtEuro = (n) => (Number(n)||0).toLocaleString("it-IT",{style:"currency",currency:"EUR"});
-const numIt = (s) => {
-  if(s===""||s==null) return 0;
-  let t=String(s).trim().replace(/[^\d.,-]/g,"");
-  const hc=t.includes(","), hd=t.includes(".");
-  if(hc&&hd){ if(t.lastIndexOf(",")>t.lastIndexOf(".")) t=t.replace(/\./g,"").replace(",","."); else t=t.replace(/,/g,""); }
-  else if(hc){ t=t.replace(",","."); }
-  else if(hd){ if(t.split(".").length>2) t=t.replace(/\./g,""); }
-  const n=parseFloat(t); return isNaN(n)?0:n;
-};
+const numIt = (s) => { if(s===""||s==null) return 0; let t=String(s).trim().replace(/[^\d.,-]/g,""); const hc=t.includes(","),hd=t.includes("."); if(hc&&hd){ if(t.lastIndexOf(",")>t.lastIndexOf(".")) t=t.replace(/\./g,"").replace(",","."); else t=t.replace(/,/g,""); } else if(hc){ t=t.replace(",","."); } else if(hd){ if(t.split(".").length>2) t=t.replace(/\./g,""); } const n=parseFloat(t); return isNaN(n)?0:n; };
 const numStr = (n) => (n==null||n==="")?"":String(n).replace(".",",");
 const tgUser = (h) => (h||"").replace(/^@/,"").trim();
+const normUrl = (u) => { u=(u||"").trim(); if(!u) return ""; return /^https?:\/\//i.test(u)?u:"https://"+u; };
 
 const feePct = (e) => (e.commissionePayPal==null ? 6 : Number(e.commissionePayPal)) || 0;
 const rimborsoAtteso = (e) => { const p=Number(e.pagato)||0; if(e.tipoRimborso==="perdita") return Math.max(0,p-(Number(e.perditaFissa)||0)); return p*(Number(e.percentualeRimborso)||0)/100; };
@@ -63,39 +59,47 @@ const recReale = (e) => (e.rimborsato && e.pagato>0) ? (Number(e.rimborsoRicevut
 function dateStatus(iso){ const d=giorniDaOggi(iso); if(d==null) return "in-attesa"; if(d<0) return "scaduta"; if(d===0) return "oggi"; return "in-attesa"; }
 function fase(e){ if(e.rimborsato) return "archiviato"; if(!e.senzaRecensione && e.fatta) return "attesa-rimborso"; if(e.arrivato) return "arrivato"; return "in-arrivo"; }
 const archiviato = (e) => !!e.rimborsato;
-const normUrl = (u) => { u=(u||"").trim(); if(!u) return ""; return /^https?:\/\//i.test(u)?u:"https://"+u; };
+function stepsFor(e){ const f=fase(e);
+  if(e.senzaRecensione) return [
+    {label:"Arrivo", state:(e.arrivato||e.rimborsato)?"done":(f==="in-arrivo"?"current":"todo")},
+    {label:"Rimborso", state:e.rimborsato?"done":(f==="arrivato"?"current":"todo")} ];
+  return [
+    {label:"Arrivo", state:(e.arrivato||e.fatta||e.rimborsato)?"done":(f==="in-arrivo"?"current":"todo")},
+    {label:"Recensione", state:(e.fatta||e.rimborsato)?"done":(f==="arrivato"?"current":"todo")},
+    {label:"Rimborso", state:e.rimborsato?"done":(f==="attesa-rimborso"?"current":"todo")} ];
+}
 
 function normalizza(e){
-  const pagato=Number(e.pagato)||0;
-  let perc=e.percentualeRimborso;
+  const pagato=Number(e.pagato)||0; let perc=e.percentualeRimborso;
   if(perc==null||perc==="") perc=(pagato>0 && e.rimborso!=null)?Math.round((Number(e.rimborso)/pagato)*1000)/10:0;
-  const ga=e.giorniAttesa==null?7:Number(e.giorniAttesa);
-  const arr=e.dataArrivo||toISO(oggiMezzanotte());
+  const ga=e.giorniAttesa==null?7:Number(e.giorniAttesa); const arr=e.dataArrivo||toISO(oggiMezzanotte());
   return { id:e.id||Date.now()+Math.floor(Math.random()*1000), prodotto:e.prodotto||"", ordine:e.ordine||"", handleTelegram:e.handleTelegram||"",
     pagato, tipoRimborso:e.tipoRimborso==="perdita"?"perdita":"percentuale", percentualeRimborso:Number(perc)||0, perditaFissa:e.perditaFissa==null?0:Number(e.perditaFissa),
     coprePayPal:!!e.coprePayPal, commissionePayPal:e.commissionePayPal==null?6:Number(e.commissionePayPal),
     senzaRecensione:!!e.senzaRecensione, dataArrivo:arr, giorniAttesa:ga, recensioneManuale:!!e.recensioneManuale, dataRecensione:e.dataRecensione||addGiorni(arr,ga),
-    arrivato: (!!e.arrivato)||(!!e.dataArrivoReale)||(!!e.fatta)||(!!e.rimborsato), dataArrivoReale:e.dataArrivoReale||null, linkRecensione:e.linkRecensione||"",
+    arrivato:(!!e.arrivato)||(!!e.dataArrivoReale)||(!!e.fatta)||(!!e.rimborsato), dataArrivoReale:e.dataArrivoReale||null, linkRecensione:e.linkRecensione||"",
+    creato: e.creato!=null?Number(e.creato):(typeof e.id==="number"?e.id:Date.now()),
     note:e.note||"", fatta:!!e.fatta, rimborsato:!!e.rimborsato, rimborsoRicevuto:e.rimborsoRicevuto==null?null:Number(e.rimborsoRicevuto) };
 }
 
 function scaricaICS(e){
   const dt=(e.dataRecensione||"").replace(/-/g,""); if(!dt) return;
   const stamp=toISO(new Date()).replace(/-/g,"")+"T090000";
-  const titolo=(e.senzaRecensione?"Chiedi rimborso Amazon: ":"Recensione Amazon: ")+(e.prodotto||e.ordine||"");
+  const titolo=(e.senzaRecensione?"Chiedi rimborso: ":"Recensione Amazon: ")+(e.prodotto||e.ordine||"");
   const desc=[`Ordine: ${e.ordine||"—"}`, e.handleTelegram?`Agente: ${e.handleTelegram}`:"", `Pagato: ${fmtEuro(e.pagato)}`, `Rimborso atteso: ${fmtEuro(rimborsoAtteso(e))}`, `Netto atteso: ${fmtEuro(nettoAtteso(e))}`, e.note?`Note: ${e.note}`:""].filter(Boolean).join("\\n");
-  const ics=["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//Recensioni Amazon//IT","CALSCALE:GREGORIAN","BEGIN:VEVENT",`UID:${e.id}@recensioni-amazon`,`DTSTAMP:${stamp}`,`DTSTART:${dt}T100000`,`DTEND:${dt}T101500`,`SUMMARY:${titolo}`,`DESCRIPTION:${desc}`,"BEGIN:VALARM","TRIGGER:-PT15M","ACTION:DISPLAY","DESCRIPTION:Promemoria","END:VALARM","END:VEVENT","END:VCALENDAR"].join("\r\n");
+  const ics=["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//Amz Review//IT","CALSCALE:GREGORIAN","BEGIN:VEVENT",`UID:${e.id}@amz-review`,`DTSTAMP:${stamp}`,`DTSTART:${dt}T100000`,`DTEND:${dt}T101500`,`SUMMARY:${titolo}`,`DESCRIPTION:${desc}`,"BEGIN:VALARM","TRIGGER:-PT15M","ACTION:DISPLAY","DESCRIPTION:Promemoria","END:VALARM","END:VEVENT","END:VCALENDAR"].join("\r\n");
   const url=URL.createObjectURL(new Blob([ics],{type:"text/calendar;charset=utf-8"}));
   const a=document.createElement("a"); a.href=url; a.download=`${(e.prodotto||e.ordine||"ordine").slice(0,20)}.ics`;
   document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 function esportaCSV(lista){
-  const intest=["Prodotto","Ordine","Agente Telegram","Pagato","Tipo","Rimborso atteso","Copre PayPal","Netto atteso","Ricevuto","Recupero reale %","Costo netto","Promemoria","Recensione","Rimborso","Note"];
+  const intest=["Prodotto","Ordine","Agente Telegram","Pagato","Tipo","Rimborso atteso","Copre PayPal","Netto atteso","Ricevuto","Recupero reale %","Costo netto","Fase","Link recensione","Promemoria","Note"];
+  const FN={"in-arrivo":"In arrivo","arrivato":"Arrivato","attesa-rimborso":"Attesa rimborso","archiviato":"Archiviato"};
   const righe=lista.map((e)=>{ const rr=recReale(e); const costo=e.rimborsato?(e.pagato-(Number(e.rimborsoRicevuto)||0)):(e.pagato-nettoAtteso(e)); const tipo=e.tipoRimborso==="perdita"?("perdita "+fmtEuro(e.perditaFissa)):(pctConcordato(e)+"%");
-    return [e.prodotto||"",e.ordine||"",e.handleTelegram||"",String(e.pagato).replace(".",","),tipo,String(rimborsoAtteso(e).toFixed(2)).replace(".",","),e.coprePayPal?"Si":"No",String(nettoAtteso(e).toFixed(2)).replace(".",","),e.rimborsato?String(Number(e.rimborsoRicevuto).toFixed(2)).replace(".",","):"",rr!=null?Math.round(rr)+"%":"",String(costo.toFixed(2)).replace(".",","),fmtData(e.dataRecensione),e.senzaRecensione?"—":(e.fatta?"Fatta":"Da fare"),e.rimborsato?"Ricevuto":"In attesa",(e.note||"").replace(/[\r\n;]/g," ")]; });
+    return [e.prodotto||"",e.ordine||"",e.handleTelegram||"",String(e.pagato).replace(".",","),tipo,String(rimborsoAtteso(e).toFixed(2)).replace(".",","),e.coprePayPal?"Si":"No",String(nettoAtteso(e).toFixed(2)).replace(".",","),e.rimborsato?String(Number(e.rimborsoRicevuto).toFixed(2)).replace(".",","):"",rr!=null?Math.round(rr)+"%":"",String(costo.toFixed(2)).replace(".",","),FN[fase(e)],e.linkRecensione||"",fmtData(e.dataRecensione),(e.note||"").replace(/[\r\n;]/g," ")]; });
   const csv="\uFEFF"+[intest,...righe].map((r)=>r.map((c)=>`"${c}"`).join(";")).join("\r\n");
   const url=URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8"}));
-  const a=document.createElement("a"); a.href=url; a.download="recensioni-amazon.csv"; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000);
+  const a=document.createElement("a"); a.href=url; a.download="amz-review.csv"; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 const formVuoto = () => ({ id:null, prodotto:"", ordine:"", handleTelegram:"", pagato:"", tipoRimborso:"percentuale", percentualeRimborso:"", perditaFissa:"", coprePayPal:false, commissionePayPal:"6", senzaRecensione:false, dataArrivo:toISO(oggiMezzanotte()), giorniAttesa:"7", recensioneManuale:false, dataRecensione:addGiorni(toISO(oggiMezzanotte()),7), note:"", fatta:false, rimborsato:false, rimborsoRicevuto:null });
 
@@ -109,22 +113,26 @@ function traduciErrore(e){ const c=(e&&e.code)||"";
   if(c.includes("too-many-requests")) return "Troppi tentativi, attendi un minuto.";
   return "Errore, riprova."; }
 
+function Logo({big}){ return (
+  <svg className={"logo-svg"+(big?" big":"")} viewBox="0 0 230 58" role="img" aria-label="Amz Review">
+    <text x="2" y="36">Amz Review</text>
+    <path d="M8 45 C 72 60, 156 60, 206 45" fill="none" stroke="#FF9900" strokeWidth="4" strokeLinecap="round"/>
+    <path d="M206 45 l -9 1.6 l 5.4 7.9 z" fill="#FF9900"/>
+  </svg> ); }
+
 function Login(){
   const [email,setEmail]=useState(""); const [pw,setPw]=useState(""); const [err,setErr]=useState(""); const [busy,setBusy]=useState(false);
-  const azione=async(tipo)=>{ setErr(""); setBusy(true);
-    try{ if(tipo==="reg") await auth.createUserWithEmailAndPassword(email.trim(),pw); else await auth.signInWithEmailAndPassword(email.trim(),pw); }
-    catch(e){ setErr(traduciErrore(e)); } setBusy(false); };
+  const azione=async(tipo)=>{ setErr(""); setBusy(true); try{ if(tipo==="reg") await auth.createUserWithEmailAndPassword(email.trim(),pw); else await auth.signInWithEmailAndPassword(email.trim(),pw); }catch(e){ setErr(traduciErrore(e)); } setBusy(false); };
   return (
     <div className="login"><style>{CSS}</style>
       <div className="login-card">
-        <div className="login-eyebrow">Promemoria rimborsi</div>
-        <svg className="logo-svg big" viewBox="0 0 230 58" role="img" aria-label="Amz Review"><text x="2" y="36">Amz Review</text><path d="M8 45 C 72 60, 156 60, 206 45" fill="none" stroke="#FF9900" strokeWidth="4" strokeLinecap="round"/><path d="M206 45 l -9 1.6 l 5.4 7.9 z" fill="#FF9900"/></svg>
+        <Logo big/>
         <p className="login-sub">Accedi per ritrovare i tuoi ordini su ogni dispositivo.</p>
         <label className="campo"><span>Email</span><input type="email" inputMode="email" value={email} onChange={(e)=>setEmail(e.target.value)} placeholder="tuamail@esempio.it"/></label>
         <label className="campo"><span>Password</span><input type="password" value={pw} onChange={(e)=>setPw(e.target.value)} placeholder="minimo 6 caratteri"/></label>
         {err && <div className="login-err">{err}</div>}
         <button className="salva login-btn" disabled={busy} onClick={()=>azione("login")}>{busy?"Attendi…":"Accedi"}</button>
-        <button className="annulla login-btn2" disabled={busy} onClick={()=>azione("reg")}>Prima volta? Crea account</button>
+        <button className="ghost login-btn2" disabled={busy} onClick={()=>azione("reg")}>Prima volta? Crea account</button>
       </div>
     </div>
   );
@@ -134,22 +142,19 @@ function Main({user}){
   const [voci,setVoci]=useState([]); const [caricato,setCaricato]=useState(false);
   const [vista,setVista]=useState("attivi"); const [form,setForm]=useState(null); const lastSync=useRef(null);
 
-  useEffect(()=>{
-    const r=db.ref("users/"+user.uid+"/voci");
+  useEffect(()=>{ const r=db.ref("users/"+user.uid+"/voci");
     try{ const c=localStorage.getItem("voci_"+user.uid); if(c){ lastSync.current=c; setVoci(JSON.parse(c).map(normalizza)); } }catch(_){}
     const cb=r.on("value",(snap)=>{ const val=snap.val(); const arr=Array.isArray(val)?val:(val?Object.values(val):[]); const json=JSON.stringify(arr);
       if(json!==lastSync.current){ lastSync.current=json; setVoci(arr.map(normalizza)); try{localStorage.setItem("voci_"+user.uid,json);}catch(_){} } setCaricato(true); },()=>setCaricato(true));
-    return ()=>r.off("value",cb);
-  },[user.uid]);
+    return ()=>r.off("value",cb); },[user.uid]);
   useEffect(()=>{ if(!caricato) return; const json=JSON.stringify(voci); if(json===lastSync.current) return; lastSync.current=json; try{localStorage.setItem("voci_"+user.uid,json);}catch(_){} db.ref("users/"+user.uid+"/voci").set(voci).catch(()=>{}); },[voci,caricato,user.uid]);
 
   const salvaForm=()=>{ if(!form.pagato&&!form.prodotto&&!form.ordine) return;
     const base={ ...form, pagato:numIt(form.pagato), percentualeRimborso:numIt(form.percentualeRimborso), perditaFissa:numIt(form.perditaFissa), commissionePayPal:numIt(form.commissionePayPal), giorniAttesa:parseInt(form.giorniAttesa)||0,
-      dataRecensione: (form.senzaRecensione||form.recensioneManuale)?form.dataRecensione:addGiorni(form.dataArrivo,parseInt(form.giorniAttesa)||0),
+      dataRecensione:(form.senzaRecensione||form.recensioneManuale)?form.dataRecensione:addGiorni(form.dataArrivo,parseInt(form.giorniAttesa)||0),
       rimborsoRicevuto: form.rimborsoRicevuto==null?null:Number(form.rimborsoRicevuto) };
-    if(form.id) setVoci((v)=>v.map((x)=>x.id===form.id?base:x)); else setVoci((v)=>[{...base,id:Date.now()},...v]); setForm(null); };
-  const elimina=(id)=>setVoci((v)=>v.filter((x)=>x.id!==id));
-  const segnaRec=(id,fatta)=>setVoci((v)=>v.map((x)=>x.id===id?{...x,fatta}:x));
+    if(form.id) setVoci((v)=>v.map((x)=>x.id===form.id?base:x)); else { const ts=Date.now(); setVoci((v)=>[{...base,id:ts,creato:ts},...v]); } setForm(null); };
+  const elimina=(id)=>{ if(window.confirm("Eliminare questo ordine?")) setVoci((v)=>v.filter((x)=>x.id!==id)); };
   const segnaArrivato=(e)=>setVoci((v)=>v.map((x)=>{ if(x.id!==e.id) return x; const today=toISO(oggiMezzanotte()); const nuovaRec=(!x.senzaRecensione&&!x.recensioneManuale)?addGiorni(today,x.giorniAttesa):x.dataRecensione; return {...x,arrivato:true,dataArrivoReale:today,dataRecensione:nuovaRec}; }));
   const annullaArrivo=(id)=>setVoci((v)=>v.map((x)=>x.id===id?{...x,arrivato:false,dataArrivoReale:null}:x));
   const inviaRecensione=(e)=>{ const link=window.prompt("Incolla il link della recensione (puoi anche lasciarlo vuoto):", e.linkRecensione||""); if(link===null) return; setVoci((v)=>v.map((x)=>x.id===e.id?{...x,fatta:true,linkRecensione:link.trim()}:x)); };
@@ -160,11 +165,9 @@ function Main({user}){
   const stat=useMemo(()=>{ const speso=voci.reduce((s,e)=>s+(Number(e.pagato)||0),0); const ricevuto=voci.reduce((s,e)=>s+(e.rimborsato?(Number(e.rimborsoRicevuto)||0):0),0);
     const daRicevere=voci.reduce((s,e)=>s+(!e.rimborsato?nettoAtteso(e):0),0); const conP=voci.filter((e)=>e.pagato>0);
     const recMedio=conP.length>0?Math.round(conP.reduce((s,e)=>s+pctConcordato(e),0)/conP.length):0; return {speso,ricevuto,daRicevere,recMedio}; },[voci]);
-
   const daFare=voci.filter((e)=>{ if(e.rimborsato||!e.arrivato) return false; const notActed=e.senzaRecensione?true:!e.fatta; if(!notActed) return false; const d=giorniDaOggi(e.dataRecensione); return d!=null && d<=0; });
   const inRitardo=daFare.filter((e)=>giorniDaOggi(e.dataRecensione)<0).length;
-  const lista=useMemo(()=>{ let l=[...voci]; if(vista==="attivi") l=l.filter((e)=>!archiviato(e)); if(vista==="archivio") l=l.filter((e)=>archiviato(e)); l.sort((a,b)=>(a.dataRecensione||"").localeCompare(b.dataRecensione||"")); return l; },[voci,vista]);
-
+  const lista=useMemo(()=>{ let l=[...voci]; if(vista==="attivi") l=l.filter((e)=>!archiviato(e)); if(vista==="archivio") l=l.filter((e)=>archiviato(e)); l.sort((a,b)=>(Number(b.creato)||0)-(Number(a.creato)||0)); return l; },[voci,vista]);
   const fp = form?{ pagato:numIt(form.pagato), tipoRimborso:form.tipoRimborso, percentualeRimborso:numIt(form.percentualeRimborso), perditaFissa:numIt(form.perditaFissa), coprePayPal:form.coprePayPal, commissionePayPal:numIt(form.commissionePayPal) }:null;
 
   if(!caricato) return (<div className="app"><style>{CSS}</style><div className="loading">Sincronizzo i tuoi dati…</div></div>);
@@ -173,7 +176,7 @@ function Main({user}){
     <div className="app"><style>{CSS}</style>
       <header className="hd">
         <div className="hd-top"><span className="hd-eyebrow">Promemoria rimborsi</span><button className="logout" onClick={()=>auth.signOut()}>Esci</button></div>
-        <div className="hd-row"><svg className="logo-svg" viewBox="0 0 230 58" role="img" aria-label="Amz Review"><text x="2" y="36">Amz Review</text><path d="M8 45 C 72 60, 156 60, 206 45" fill="none" stroke="#FF9900" strokeWidth="4" strokeLinecap="round"/><path d="M206 45 l -9 1.6 l 5.4 7.9 z" fill="#FF9900"/></svg><div className="hd-rec"><span className="hd-rec-num">{stat.recMedio}%</span><span className="hd-rec-lab">media concordata</span></div></div>
+        <div className="hd-row"><Logo/><div className="hd-rec"><span className="hd-rec-num">{stat.recMedio}%</span><span className="hd-rec-lab">media concordata</span></div></div>
         <div className="stats">
           <div className="stat"><span className="stat-lab">Speso</span><span className="stat-val">{fmtEuro(stat.speso)}</span></div>
           <div className="stat"><span className="stat-lab">Ricevuto</span><span className="stat-val green">{fmtEuro(stat.ricevuto)}</span></div>
@@ -181,49 +184,54 @@ function Main({user}){
         </div>
       </header>
 
-      {daFare.length>0 && (<div className="alert"><strong>{daFare.length}</strong> promemoria in scadenza (recensioni o rimborsi){inRitardo>0 && <>, di cui <strong>{inRitardo}</strong> in ritardo</>}.</div>)}
+      {daFare.length>0 && (<div className="alert"><strong>{daFare.length}</strong> promemoria in scadenza{inRitardo>0 && <>, di cui <strong>{inRitardo}</strong> in ritardo</>}.</div>)}
 
       <div className="tabs">{[["attivi","Attivi"],["archivio","Archivio"],["tutti","Tutti"]].map(([k,lab])=>(<button key={k} className={"tab"+(vista===k?" on":"")} onClick={()=>setVista(k)}>{lab}</button>))}</div>
 
       <main className="lista">
         {lista.length===0 && (<div className="vuoto">Nessun ordine qui.<br/>Tocca <strong>＋ Aggiungi ordine</strong> per iniziare.</div>)}
-        {lista.map((e)=>{ const f=fase(e); const perc=e.rimborsato?Math.round(recReale(e)):pctConcordato(e); const ds=dateStatus(e.dataRecensione); const diff=e.rimborsato?(Number(e.rimborsoRicevuto)||0)-nettoAtteso(e):null;
-          const badgeTxt=f==="in-arrivo"?"In arrivo":f==="arrivato"?(e.senzaRecensione?"Da rimborsare":"Da recensire"):f==="attesa-rimborso"?"Attesa rimborso":"Archiviato";
-          const badgeCls=f==="archiviato"?"b-completata":f==="attesa-rimborso"?"b-attesa":f==="arrivato"?(ds==="scaduta"?"b-scaduta":ds==="oggi"?"b-oggi":"b-in-attesa"):"b-in-attesa";
-          const cardCls=f==="archiviato"?"st-completata":f==="attesa-rimborso"?"st-attesa":f==="arrivato"?(ds==="scaduta"?"st-scaduta":ds==="oggi"?"st-oggi":""):"";
-          const chips=[];
-          if(f==="in-arrivo"){ const d=giorniDaOggi(e.dataArrivo); chips.push({t:d==null?"Arrivo previsto":d>0?`Arrivo previsto tra ${d}g`:d===0?"Arrivo previsto oggi":`Previsto ${Math.abs(d)}g fa — è arrivato?`, c:d<0?"k-oggi":""}); }
-          if(e.dataArrivoReale && f!=="in-arrivo"){ const da=giorniDaOggi(e.dataArrivoReale); const n=Math.abs(da); chips.push({t:da===0?"Arrivato oggi":n===1?"Arrivato 1 giorno fa":`Arrivato ${n} giorni fa`, c:""}); }
-          if(f==="arrivato"){ const d=giorniDaOggi(e.dataRecensione); const w=e.senzaRecensione?"rimborso":"recensione"; const t=d===0?(e.senzaRecensione?"Chiedi rimborso oggi":"Recensione oggi"):d<0?(e.senzaRecensione?`Rimborso in ritardo ${Math.abs(d)}g`:`Recensione in ritardo ${Math.abs(d)}g`):d===1?(e.senzaRecensione?"Chiedi rimborso tra 1g":"Recensione tra 1g"):(e.senzaRecensione?`Chiedi rimborso tra ${d}g`:`Recensione tra ${d}g`); chips.push({t, c:ds==="oggi"?"k-oggi":ds==="scaduta"?"k-scaduta":""}); }
-          if(f==="attesa-rimborso"){ chips.push({t:"Recensione inviata", c:"k-ok"}); chips.push({t:"Rimborso da ricevere", c:"k-wait"}); }
-          if(f==="archiviato"){ if(!e.senzaRecensione) chips.push({t:"Recensione inviata", c:"k-ok"}); chips.push({t:"Rimborso ricevuto", c:"k-ok"}); }
+        {lista.map((e)=>{ const f=fase(e); const perc=e.rimborsato?Math.round(recReale(e)):pctConcordato(e); const ds=dateStatus(e.dataRecensione); const diff=e.rimborsato?(Number(e.rimborsoRicevuto)||0)-nettoAtteso(e):null; const steps=stepsFor(e);
+          let timeTxt="", timeCls="";
+          if(f==="in-arrivo"){ const d=giorniDaOggi(e.dataArrivo); timeTxt=d==null?"Arrivo previsto":d>0?`Arrivo previsto tra ${d} giorni`:d===0?"Arrivo previsto oggi":`Previsto ${Math.abs(d)} giorni fa — è arrivato?`; timeCls=d<0?"urge":""; }
+          else if(f==="arrivato"){ const da=e.dataArrivoReale?giorniDaOggi(e.dataArrivoReale):null; const arrTxt=da==null?"":da===0?"Arrivato oggi":Math.abs(da)===1?"Arrivato 1 giorno fa":`Arrivato ${Math.abs(da)} giorni fa`; const d=giorniDaOggi(e.dataRecensione); const azw=e.senzaRecensione?"Chiedi rimborso":"Recensione"; const due=d===0?`${azw} oggi`:d<0?`${azw} in ritardo ${Math.abs(d)}g`:d===1?`${azw} tra 1g`:`${azw} tra ${d}g`; timeTxt=(arrTxt?arrTxt+" · ":"")+due; timeCls=ds==="scaduta"?"late":ds==="oggi"?"urge":""; }
+          else if(f==="attesa-rimborso"){ timeTxt="Recensione inviata · in attesa del rimborso"; timeCls="ok"; }
+          else { timeTxt="Completato e archiviato"; timeCls="ok"; }
+          const primary = f==="in-arrivo"?{lab:"📦  Segna come arrivato",fn:()=>segnaArrivato(e)}
+            : (f==="arrivato"&&!e.senzaRecensione)?{lab:"✍️  Recensione inviata",fn:()=>inviaRecensione(e)}
+            : (f==="arrivato"&&e.senzaRecensione)?{lab:"💶  Rimborso ricevuto",fn:()=>segnaRimborso(e)}
+            : f==="attesa-rimborso"?{lab:"💶  Rimborso ricevuto",fn:()=>segnaRimborso(e)} : null;
+          const undo = f==="arrivato"?{t:"Segna non arrivato",fn:()=>annullaArrivo(e.id)}
+            : f==="attesa-rimborso"?{t:"Annulla recensione",fn:()=>annullaRecensione(e.id)}
+            : f==="archiviato"?{t:"Riapri ordine",fn:()=>annullaRimborso(e.id)} : null;
           return (
-            <article key={e.id} className={"card "+cardCls}>
-              <div className="card-top"><div className="card-name">{e.prodotto||"(senza nome)"}</div><span className={"badge "+badgeCls}>{badgeTxt}</span></div>
-              <div className="metarow"><span className="card-ordine">Ordine {e.ordine||"—"}</span>{e.senzaRecensione && <span className="tag-no-rec">senza recensione</span>}{tgUser(e.handleTelegram) && <a className="tg" href={`https://t.me/${tgUser(e.handleTelegram)}`} target="_blank" rel="noreferrer">👤 @{tgUser(e.handleTelegram)}</a>}</div>
-              <div className="recbar"><div className="recbar-track"><div className="recbar-fill" style={{width:Math.min(100,perc)+"%"}}/></div><span className="recbar-pct">{perc}%</span></div>
-              <span className={"ppchip "+(e.coprePayPal?"pp-ok":"pp-no")}>{e.coprePayPal?"Tasse PayPal coperte":`PayPal −${feePct(e)}% a tuo carico`}</span>
+            <article key={e.id} className={"card f-"+f}>
+              <div className="card-top"><div className="card-name">{e.prodotto||"(senza nome)"}</div><span className="recbar-pct">{perc}%</span></div>
+              <div className="metarow"><span className="card-ordine">Ordine {e.ordine||"—"}</span>{e.senzaRecensione && <span className="tag-no-rec">solo rimborso</span>}{tgUser(e.handleTelegram) && <a className="tg" href={`https://t.me/${tgUser(e.handleTelegram)}`} target="_blank" rel="noreferrer">@{tgUser(e.handleTelegram)}</a>}</div>
+
+              <div className="steps">{steps.map((s,i)=>(<React.Fragment key={i}><div className="stepwrap"><div className={"dot "+s.state}>{s.state==="done"?"✓":(i+1)}</div><span className={"step-cap"+(s.state==="current"?" cur":"")}>{s.label}</span></div>{i<steps.length-1 && <div className="barwrap"><div className={"bar"+(s.state==="done"?" done":"")}/></div>}</React.Fragment>))}</div>
+
+              <div className={"timing "+timeCls}>{timeTxt}</div>
+              <div className="recbar"><div className="recbar-track"><div className="recbar-fill" style={{width:Math.min(100,perc)+"%"}}/></div></div>
+
               <div className="cifre">
                 <div><span className="cifra-lab">Pagato</span><span className="cifra-val">{fmtEuro(e.pagato)}</span></div>
                 <div><span className="cifra-lab">{e.tipoRimborso==="perdita"?`Perdita ${fmtEuro(e.perditaFissa)}`:`Concordato ${pctConcordato(e)}%`}</span><span className="cifra-val">{fmtEuro(rimborsoAtteso(e))}</span></div>
-                <div><span className="cifra-lab">Netto atteso</span><span className="cifra-val">{fmtEuro(nettoAtteso(e))}</span></div>
+                <div><span className="cifra-lab">Netto atteso {e.coprePayPal?"· PayPal ok":`· −${feePct(e)}% PP`}</span><span className="cifra-val">{fmtEuro(nettoAtteso(e))}</span></div>
                 {e.rimborsato?<div><span className="cifra-lab">Ricevuto</span><span className="cifra-val gold">{fmtEuro(e.rimborsoRicevuto)}</span></div>:<div><span className="cifra-lab">Costo netto</span><span className="cifra-val">{fmtEuro(e.pagato-nettoAtteso(e))}</span></div>}
               </div>
-              {e.rimborsato && (<div className={"esito "+(diff>=-0.01?"ok":"ko")}>{diff>=-0.01?`✓ Ricevuto come previsto`:`${fmtEuro(diff)} rispetto all'atteso`} · recupero reale {Math.round(recReale(e))}%</div>)}
-              <div className="checks">{chips.map((c,i)=>(<span key={i} className={"chk "+c.c}>{c.t}</span>))}</div>
+
+              {e.rimborsato && (<div className={"esito "+(diff>=-0.01?"ok":"ko")}>{diff>=-0.01?"✓ Ricevuto come previsto":`${fmtEuro(diff)} rispetto all'atteso`} · recupero reale {Math.round(recReale(e))}%</div>)}
               {normUrl(e.linkRecensione) && <a className="link-rec" href={normUrl(e.linkRecensione)} target="_blank" rel="noreferrer">🔗 Vedi recensione</a>}
               {e.note && <div className="card-note">{e.note}</div>}
-              <div className="azioni">
-                {f==="in-arrivo" && <button className="az az-gold" onClick={()=>segnaArrivato(e)}>📦 Prodotto arrivato</button>}
-                {f==="arrivato" && !e.senzaRecensione && <button className="az az-ok" onClick={()=>inviaRecensione(e)}>✓ Recensione inviata</button>}
-                {f==="arrivato" && e.senzaRecensione && <button className="az az-gold" onClick={()=>segnaRimborso(e)}>💰 Rimborso ricevuto</button>}
-                {f==="arrivato" && <button className="az" onClick={()=>annullaArrivo(e.id)}>↺ Non arrivato</button>}
-                {f==="attesa-rimborso" && <button className="az az-gold" onClick={()=>segnaRimborso(e)}>💰 Rimborso ricevuto</button>}
-                {f==="attesa-rimborso" && <button className="az" onClick={()=>annullaRecensione(e.id)}>↺ Annulla recensione</button>}
-                {f==="archiviato" && <button className="az" onClick={()=>annullaRimborso(e.id)}>↺ Riapri</button>}
-                <button className="az" onClick={()=>scaricaICS(e)}>🔔</button>
-                <button className="az" onClick={()=>setForm({...e, pagato:numStr(e.pagato), percentualeRimborso:numStr(e.percentualeRimborso), perditaFissa:numStr(e.perditaFissa), commissionePayPal:numStr(e.commissionePayPal), giorniAttesa:String(e.giorniAttesa)})}>✎</button>
-                <button className="az az-del" onClick={()=>elimina(e.id)}>Elimina</button>
+
+              <div className="act">
+                {primary && <button className="act-primary" onClick={primary.fn}>{primary.lab}</button>}
+                <div className="act-icons">
+                  {undo && <button className="icon-btn" title={undo.t} onClick={undo.fn}>↺</button>}
+                  <button className="icon-btn" title="Promemoria calendario" onClick={()=>scaricaICS(e)}>🔔</button>
+                  <button className="icon-btn" title="Modifica" onClick={()=>setForm({...e, pagato:numStr(e.pagato), percentualeRimborso:numStr(e.percentualeRimborso), perditaFissa:numStr(e.perditaFissa), commissionePayPal:numStr(e.commissionePayPal), giorniAttesa:String(e.giorniAttesa)})}>✎</button>
+                  <button className="icon-btn danger" title="Elimina" onClick={()=>elimina(e.id)}>🗑</button>
+                </div>
               </div>
             </article>
           ); })}
@@ -239,36 +247,19 @@ function Main({user}){
             <label className="campo"><span>Numero ordine</span><input value={form.ordine} onChange={(ev)=>setForm({...form,ordine:ev.target.value})} placeholder="123-4567890-1234567"/></label>
             <label className="campo"><span>Handle Telegram agente</span><input value={form.handleTelegram} onChange={(ev)=>setForm({...form,handleTelegram:ev.target.value})} placeholder="@agente"/></label>
             <label className="campo"><span>Pagato (€)</span><input inputMode="decimal" value={form.pagato} onChange={(ev)=>setForm({...form,pagato:ev.target.value})} placeholder="132,00"/></label>
-
-            <div className="campo"><span>Come è definito il rimborso?</span>
-              <div className="pills"><button className={"pill"+(form.tipoRimborso!=="perdita"?" on":"")} onClick={()=>setForm({...form,tipoRimborso:"percentuale"})}>Percentuale %</button><button className={"pill"+(form.tipoRimborso==="perdita"?" on":"")} onClick={()=>setForm({...form,tipoRimborso:"perdita"})}>Perdita fissa €</button></div>
-            </div>
-            {form.tipoRimborso!=="perdita"
-              ? <label className="campo"><span>Rimborso concordato (%)</span><input inputMode="decimal" value={form.percentualeRimborso} onChange={(ev)=>setForm({...form,percentualeRimborso:ev.target.value})} placeholder="80"/></label>
-              : <label className="campo"><span>Quanto ci perdi (€)</span><input inputMode="decimal" value={form.perditaFissa} onChange={(ev)=>setForm({...form,perditaFissa:ev.target.value})} placeholder="10"/></label>}
-
-            <div className="campo"><span>Il rimborso copre le tasse PayPal?</span>
-              <div className="pills"><button className={"pill"+(form.coprePayPal?" on":"")} onClick={()=>setForm({...form,coprePayPal:true})}>Sì, coperte</button><button className={"pill"+(!form.coprePayPal?" on":"")} onClick={()=>setForm({...form,coprePayPal:false})}>No, a mio carico</button></div>
-            </div>
+            <div className="campo"><span>Come è definito il rimborso?</span><div className="pills"><button className={"pill"+(form.tipoRimborso!=="perdita"?" on":"")} onClick={()=>setForm({...form,tipoRimborso:"percentuale"})}>Percentuale %</button><button className={"pill"+(form.tipoRimborso==="perdita"?" on":"")} onClick={()=>setForm({...form,tipoRimborso:"perdita"})}>Perdita fissa €</button></div></div>
+            {form.tipoRimborso!=="perdita" ? <label className="campo"><span>Rimborso concordato (%)</span><input inputMode="decimal" value={form.percentualeRimborso} onChange={(ev)=>setForm({...form,percentualeRimborso:ev.target.value})} placeholder="80"/></label> : <label className="campo"><span>Quanto ci perdi (€)</span><input inputMode="decimal" value={form.perditaFissa} onChange={(ev)=>setForm({...form,perditaFissa:ev.target.value})} placeholder="10"/></label>}
+            <div className="campo"><span>Il rimborso copre le tasse PayPal?</span><div className="pills"><button className={"pill"+(form.coprePayPal?" on":"")} onClick={()=>setForm({...form,coprePayPal:true})}>Sì, coperte</button><button className={"pill"+(!form.coprePayPal?" on":"")} onClick={()=>setForm({...form,coprePayPal:false})}>No, a mio carico</button></div></div>
             <label className="campo"><span>Commissione PayPal (%)</span><input inputMode="decimal" value={form.commissionePayPal} onChange={(ev)=>setForm({...form,commissionePayPal:ev.target.value})} placeholder="6"/></label>
-            {fp.pagato>0 && rimborsoAtteso(fp)>0 && (<div className="anteprima-rec">Rimborso atteso: <strong>{fmtEuro(rimborsoAtteso(fp))}</strong> · Netto dopo PayPal: <strong>{fmtEuro(nettoAtteso(fp))}</strong> · Costo netto: {fmtEuro(fp.pagato-nettoAtteso(fp))}</div>)}
-
-            <div className="campo"><span>Questo ordine richiede una recensione?</span>
-              <div className="pills"><button className={"pill"+(!form.senzaRecensione?" on":"")} onClick={()=>setForm({...form,senzaRecensione:false})}>Sì, con recensione</button><button className={"pill"+(form.senzaRecensione?" on":"")} onClick={()=>setForm({...form,senzaRecensione:true, dataRecensione:form.dataRecensione||addGiorni(form.dataArrivo,form.giorniAttesa)})}>No, solo rimborso</button></div>
-            </div>
-
-            {form.senzaRecensione ? (
-              <label className="campo"><span>Quando chiedere il rimborso</span><input type="date" value={form.dataRecensione} onChange={(ev)=>setForm({...form,dataRecensione:ev.target.value})}/></label>
-            ) : (
-              <React.Fragment>
-                <label className="campo"><span>Arrivo previsto</span><input type="date" value={form.dataArrivo} onChange={(ev)=>setForm({...form,dataArrivo:ev.target.value})}/></label>
-                <div className="campo"><span>Promemoria recensione</span><div className="pills"><button className={"pill"+(!form.recensioneManuale?" on":"")} onClick={()=>setForm({...form,recensioneManuale:false})}>Automatica</button><button className={"pill"+(form.recensioneManuale?" on":"")} onClick={()=>setForm({...form,recensioneManuale:true, dataRecensione:form.dataRecensione||addGiorni(form.dataArrivo,form.giorniAttesa)})}>Scelgo io</button></div></div>
-                {!form.recensioneManuale ? (<React.Fragment><label className="campo"><span>Giorni dopo l'arrivo</span><input inputMode="numeric" value={form.giorniAttesa} onChange={(ev)=>setForm({...form,giorniAttesa:ev.target.value})}/></label><div className="anteprima-data">Promemoria recensione il <strong>{fmtData(addGiorni(form.dataArrivo,form.giorniAttesa))}</strong></div></React.Fragment>) : (<label className="campo"><span>Data recensione</span><input type="date" value={form.dataRecensione} onChange={(ev)=>setForm({...form,dataRecensione:ev.target.value})}/></label>)}
-              </React.Fragment>
-            )}
-
+            {fp.pagato>0 && rimborsoAtteso(fp)>0 && (<div className="anteprima-rec">Rimborso atteso: <strong>{fmtEuro(rimborsoAtteso(fp))}</strong> · Netto: <strong>{fmtEuro(nettoAtteso(fp))}</strong> · Costo netto: {fmtEuro(fp.pagato-nettoAtteso(fp))}</div>)}
+            <div className="campo"><span>Questo ordine richiede una recensione?</span><div className="pills"><button className={"pill"+(!form.senzaRecensione?" on":"")} onClick={()=>setForm({...form,senzaRecensione:false})}>Sì, con recensione</button><button className={"pill"+(form.senzaRecensione?" on":"")} onClick={()=>setForm({...form,senzaRecensione:true, dataRecensione:form.dataRecensione||addGiorni(form.dataArrivo,form.giorniAttesa)})}>No, solo rimborso</button></div></div>
+            {form.senzaRecensione ? (<label className="campo"><span>Quando chiedere il rimborso</span><input type="date" value={form.dataRecensione} onChange={(ev)=>setForm({...form,dataRecensione:ev.target.value})}/></label>) : (<React.Fragment>
+              <label className="campo"><span>Arrivo previsto</span><input type="date" value={form.dataArrivo} onChange={(ev)=>setForm({...form,dataArrivo:ev.target.value})}/></label>
+              <div className="campo"><span>Promemoria recensione</span><div className="pills"><button className={"pill"+(!form.recensioneManuale?" on":"")} onClick={()=>setForm({...form,recensioneManuale:false})}>Automatica</button><button className={"pill"+(form.recensioneManuale?" on":"")} onClick={()=>setForm({...form,recensioneManuale:true, dataRecensione:form.dataRecensione||addGiorni(form.dataArrivo,form.giorniAttesa)})}>Scelgo io</button></div></div>
+              {!form.recensioneManuale ? (<React.Fragment><label className="campo"><span>Giorni dopo l'arrivo</span><input inputMode="numeric" value={form.giorniAttesa} onChange={(ev)=>setForm({...form,giorniAttesa:ev.target.value})}/></label><div className="anteprima-data">Promemoria il <strong>{fmtData(addGiorni(form.dataArrivo,form.giorniAttesa))}</strong></div></React.Fragment>) : (<label className="campo"><span>Data recensione</span><input type="date" value={form.dataRecensione} onChange={(ev)=>setForm({...form,dataRecensione:ev.target.value})}/></label>)}
+            </React.Fragment>)}
             <label className="campo"><span>Note</span><textarea rows={2} value={form.note} onChange={(ev)=>setForm({...form,note:ev.target.value})}/></label>
-            <div className="sheet-btns"><button className="annulla" onClick={()=>setForm(null)}>Annulla</button><button className="salva" onClick={salvaForm}>Salva</button></div>
+            <div className="sheet-btns"><button className="ghost" onClick={()=>setForm(null)}>Annulla</button><button className="salva" onClick={salvaForm}>Salva</button></div>
           </div>
         </div>
       )}
@@ -286,88 +277,87 @@ function App(){
 
 const CSS = `
 * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
-.app,.login{ --ink:#16212B; --ink2:#46586A; --paper:#EAEEEC; --card:#FFFFFF; --line:#DDE4E0; --gold:#C7871E; --gold-bg:#FBF1DD; --green:#2E8B66; --green-bg:#E2F2EB; --coral:#D5564A; --coral-bg:#FBE6E3; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; color:var(--ink); }
-.app{ background:var(--paper); min-height:100vh; max-width:560px; margin:0 auto; padding-bottom:110px; }
+.app,.login{ --ink:#14202B; --ink2:#5B6A75; --paper:#ECEFEC; --card:#FFFFFF; --line:#E2E7E3; --gold:#BE7C16; --gold-bg:#FBF1DC; --green:#2C7D5B; --green-bg:#E4F1EA; --coral:#CE5044; --coral-bg:#FBE6E2; --fd:'Space Grotesk',-apple-system,BlinkMacSystemFont,sans-serif;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; color:var(--ink); }
+.app{ background:var(--paper); min-height:100vh; max-width:560px; margin:0 auto; padding-bottom:112px; }
 .loading{ padding:60px 20px; text-align:center; color:var(--ink2); }
 .login{ background:var(--ink); min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
-.login-card{ background:var(--paper); border-radius:20px; padding:24px 20px; width:100%; max-width:400px; }
-.login-eyebrow{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--ink2); font-weight:700; }
-.login-title{ font-size:26px; font-weight:800; margin:2px 0 6px; letter-spacing:-.02em; }
-.login-sub{ font-size:14px; color:var(--ink2); margin:0 0 18px; line-height:1.5; }
-.login-err{ background:var(--coral-bg); color:#A4322A; border-radius:10px; padding:10px 12px; font-size:13.5px; font-weight:600; margin-bottom:12px; }
+.login-card{ background:var(--paper); border-radius:22px; padding:26px 22px; width:100%; max-width:400px; }
+.login-sub{ font-size:14px; color:var(--ink2); margin:10px 0 20px; line-height:1.5; }
+.login-err{ background:var(--coral-bg); color:#9F2D24; border-radius:10px; padding:10px 12px; font-size:13.5px; font-weight:600; margin-bottom:12px; }
 .login-btn{ width:100%; margin-top:4px; } .login-btn2{ width:100%; margin-top:10px; }
-.hd{ background:var(--ink); color:#fff; padding:14px 18px 16px; border-radius:0 0 22px 22px; }
-.hd-top{ display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
-.hd-eyebrow{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:#9FB3C2; font-weight:600; }
-.logout{ background:rgba(255,255,255,.12); color:#fff; border:none; font-size:12.5px; font-weight:600; padding:6px 12px; border-radius:20px; cursor:pointer; }
-.hd-row{ display:flex; justify-content:space-between; align-items:flex-start; }
-.hd-title{ font-size:24px; font-weight:750; margin:0; letter-spacing:-.02em; }
-.logo-svg{ height:40px; width:auto; max-width:72%; display:block; overflow:visible; }
-.logo-svg.big{ height:52px; margin:2px 0 8px; }
-.logo-svg text{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; font-weight:800; font-size:30px; letter-spacing:-0.6px; fill:currentColor; }
-.hd-rec{ text-align:right; } .hd-rec-num{ display:block; font-size:25px; font-weight:800; color:#F0B748; line-height:1; }
-.hd-rec-lab{ font-size:10px; color:#9FB3C2; text-transform:uppercase; letter-spacing:.06em; }
-.stats{ display:flex; gap:8px; margin-top:16px; }
-.stat{ flex:1; background:rgba(255,255,255,.07); border-radius:12px; padding:9px 10px; }
-.stat-lab{ display:block; font-size:10.5px; color:#9FB3C2; text-transform:uppercase; letter-spacing:.04em; }
-.stat-val{ display:block; font-size:14.5px; font-weight:700; margin-top:2px; } .stat-val.gold{ color:#F0B748; } .stat-val.green{ color:#7FD3AC; }
-.alert{ margin:14px 14px 0; background:var(--gold-bg); color:#7A540F; border:1px solid #EAD6A8; border-radius:12px; padding:11px 14px; font-size:14px; } .alert strong{ font-weight:800; }
+.logo-svg{ height:38px; width:auto; max-width:70%; display:block; overflow:visible; }
+.logo-svg.big{ height:50px; margin-bottom:2px; }
+.logo-svg text{ font-family:var(--fd); font-weight:700; font-size:30px; letter-spacing:-0.5px; fill:currentColor; }
+.hd{ background:var(--ink); color:#fff; padding:14px 18px 18px; border-radius:0 0 24px 24px; }
+.hd-top{ display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+.hd-eyebrow{ font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:#8FA3B2; font-weight:600; }
+.logout{ background:rgba(255,255,255,.12); color:#fff; border:none; font-size:12.5px; font-weight:600; padding:7px 14px; border-radius:20px; cursor:pointer; }
+.hd-row{ display:flex; justify-content:space-between; align-items:center; }
+.hd-rec{ text-align:right; } .hd-rec-num{ display:block; font-family:var(--fd); font-size:26px; font-weight:700; color:#F2B33F; line-height:1; }
+.hd-rec-lab{ font-size:10px; color:#8FA3B2; text-transform:uppercase; letter-spacing:.06em; }
+.stats{ display:flex; gap:9px; margin-top:18px; }
+.stat{ flex:1; background:rgba(255,255,255,.07); border-radius:13px; padding:10px 11px; }
+.stat-lab{ display:block; font-size:10.5px; color:#8FA3B2; text-transform:uppercase; letter-spacing:.05em; }
+.stat-val{ display:block; font-family:var(--fd); font-size:15px; font-weight:600; margin-top:3px; letter-spacing:-.3px; } .stat-val.gold{ color:#F2B33F; } .stat-val.green{ color:#73CFA2; }
+.alert{ margin:14px 14px 0; background:var(--gold-bg); color:#6F4D11; border:1px solid #ECD9AE; border-radius:12px; padding:11px 14px; font-size:14px; } .alert strong{ font-weight:700; }
 .tabs{ display:flex; gap:6px; padding:14px 14px 4px; }
-.tab{ flex:1; border:none; background:transparent; color:var(--ink2); font-size:14px; font-weight:600; padding:9px 0; border-radius:10px; cursor:pointer; } .tab.on{ background:var(--ink); color:#fff; }
+.tab{ flex:1; border:none; background:transparent; color:var(--ink2); font-size:14px; font-weight:600; padding:10px 0; border-radius:11px; cursor:pointer; } .tab.on{ background:var(--ink); color:#fff; }
 .lista{ padding:8px 14px 0; }
-.vuoto{ text-align:center; color:var(--ink2); padding:40px 16px; line-height:1.6; font-size:15px; }
-.card{ background:var(--card); border:1px solid var(--line); border-radius:16px; padding:14px; margin-bottom:12px; border-left:5px solid var(--line); }
-.card.st-oggi{ border-left-color:var(--gold); } .card.st-scaduta{ border-left-color:var(--coral); } .card.st-attesa{ border-left-color:var(--gold); } .card.st-completata{ border-left-color:var(--green); opacity:.82; }
-.b-attesa{ background:var(--gold-bg); color:#8A5D10; }
-.link-rec{ display:inline-block; margin-top:10px; font-size:13px; font-weight:700; color:#2E6F9E; text-decoration:none; background:#EAF1F6; padding:8px 12px; border-radius:9px; }
-.card-top{ display:flex; justify-content:space-between; align-items:center; gap:8px; }
-.card-name{ font-size:16px; font-weight:700; letter-spacing:-.01em; }
-.metarow{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:3px; }
+.vuoto{ text-align:center; color:var(--ink2); padding:44px 16px; line-height:1.6; font-size:15px; }
+.card{ background:var(--card); border:1px solid var(--line); border-radius:18px; padding:16px; margin-bottom:13px; box-shadow:0 1px 2px rgba(20,32,43,.04); }
+.card.f-archiviato{ opacity:.8; }
+.card-top{ display:flex; justify-content:space-between; align-items:baseline; gap:10px; }
+.card-name{ font-size:16.5px; font-weight:700; letter-spacing:-.01em; }
+.recbar-pct{ font-family:var(--fd); font-size:17px; font-weight:700; color:var(--gold); letter-spacing:-.3px; }
+.metarow{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:3px; margin-bottom:14px; }
 .card-ordine{ font-size:12px; color:var(--ink2); font-variant-numeric:tabular-nums; }
-.tag-no-rec{ font-size:11px; font-weight:700; color:#4A6275; background:#EBF0F4; padding:2px 8px; border-radius:20px; }
-.tg{ font-size:12.5px; color:#2E6F9E; font-weight:700; text-decoration:none; }
-.badge{ font-size:11px; font-weight:700; padding:3px 9px; border-radius:20px; white-space:nowrap; }
-.b-oggi{ background:var(--gold-bg); color:#8A5D10; } .b-scaduta{ background:var(--coral-bg); color:#A4322A; } .b-completata{ background:var(--green-bg); color:#1F6B4C; } .b-in-attesa{ background:#EBF0F4; color:#4A6275; }
-.recbar{ display:flex; align-items:center; gap:9px; margin:11px 0 4px; }
-.recbar-track{ flex:1; height:8px; background:#EFEAE0; border-radius:6px; overflow:hidden; }
-.recbar-fill{ height:100%; background:linear-gradient(90deg,#D89B2C,#C7871E); border-radius:6px; }
-.recbar-pct{ font-size:14px; font-weight:800; color:var(--gold); min-width:38px; text-align:right; }
-.ppchip{ display:inline-block; font-size:11px; font-weight:700; padding:3px 9px; border-radius:20px; margin:6px 0 11px; }
-.pp-ok{ background:var(--green-bg); color:#1F6B4C; } .pp-no{ background:var(--gold-bg); color:#8A5D10; }
-.cifre{ display:grid; grid-template-columns:1fr 1fr; gap:9px 12px; }
-.cifre > div{ display:flex; flex-direction:column; }
-.cifra-lab{ font-size:11px; color:var(--ink2); text-transform:uppercase; letter-spacing:.03em; }
-.cifra-val{ font-size:15px; font-weight:700; font-variant-numeric:tabular-nums; } .cifra-val.gold{ color:var(--gold); }
-.esito{ margin-top:11px; font-size:13px; font-weight:700; padding:8px 11px; border-radius:9px; }
-.esito.ok{ background:var(--green-bg); color:#1F6B4C; } .esito.ko{ background:var(--coral-bg); color:#A4322A; }
-.checks{ display:flex; gap:7px; margin-top:11px; flex-wrap:wrap; }
-.chk{ font-size:12px; font-weight:700; padding:6px 10px; border-radius:8px; background:#EBF0F4; color:#3F576A; }
-.chk.k-oggi{ background:var(--gold-bg); color:#8A5D10; } .chk.k-scaduta{ background:var(--coral-bg); color:#A4322A; } .chk.k-ok{ background:var(--green-bg); color:#1F6B4C; } .chk.k-wait{ background:var(--gold-bg); color:#8A5D10; }
-.card-note{ margin-top:9px; font-size:13px; color:var(--ink2); background:#F5F7F6; padding:8px 10px; border-radius:8px; }
-.azioni{ display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; }
-.az{ border:1px solid var(--line); background:#fff; color:var(--ink); font-size:13px; font-weight:600; padding:8px 11px; border-radius:9px; cursor:pointer; }
-.az-ok{ background:var(--green); color:#fff; border-color:var(--green); } .az-gold{ background:var(--gold); color:#fff; border-color:var(--gold); }
-.az-del{ color:var(--coral); border-color:#EAD2CF; margin-left:auto; }
-.footer-btns{ position:fixed; bottom:0; left:0; right:0; max-width:560px; margin:0 auto; display:flex; gap:9px; padding:12px 14px 16px; background:linear-gradient(transparent,var(--paper) 28%); }
-.big-add{ flex:1; background:var(--gold); color:#fff; border:none; font-size:16px; font-weight:750; padding:15px; border-radius:14px; cursor:pointer; box-shadow:0 6px 18px rgba(199,135,30,.32); }
-.exp{ background:#fff; border:1px solid var(--line); color:var(--ink); font-weight:600; font-size:14px; padding:0 18px; border-radius:14px; cursor:pointer; }
-.modale{ position:fixed; inset:0; background:rgba(16,33,43,.5); display:flex; align-items:flex-end; z-index:50; backdrop-filter:blur(2px); }
-.sheet{ background:var(--paper); width:100%; max-width:560px; margin:0 auto; border-radius:22px 22px 0 0; padding:18px 16px calc(18px + env(safe-area-inset-bottom)); max-height:92vh; overflow:auto; animation:su .22s ease; }
+.tag-no-rec{ font-size:10.5px; font-weight:700; color:#5B6A75; background:#EEF2EF; padding:2px 8px; border-radius:20px; text-transform:uppercase; letter-spacing:.03em; }
+.tg{ font-size:12.5px; color:#2E6F9E; font-weight:600; text-decoration:none; }
+.steps{ display:flex; align-items:flex-start; margin:0 4px 12px; }
+.stepwrap{ display:flex; flex-direction:column; align-items:center; gap:5px; flex:0 0 auto; width:62px; }
+.dot{ width:26px; height:26px; border-radius:50%; display:grid; place-items:center; font-family:var(--fd); font-size:13px; font-weight:700; }
+.dot.todo{ background:#E8ECE9; color:#9DA9A2; } .dot.current{ background:var(--gold); color:#fff; box-shadow:0 0 0 4px var(--gold-bg); } .dot.done{ background:var(--green); color:#fff; }
+.step-cap{ font-size:10px; font-weight:600; color:#9DA9A2; text-transform:uppercase; letter-spacing:.03em; } .step-cap.cur{ color:var(--gold); }
+.barwrap{ flex:1; height:26px; display:flex; align-items:center; padding:0 2px; }
+.bar{ flex:1; height:3px; background:#E8ECE9; border-radius:2px; } .bar.done{ background:var(--green); }
+.timing{ font-size:13px; font-weight:600; color:var(--ink2); margin-bottom:11px; }
+.timing.urge{ color:#8A5D10; } .timing.late{ color:#9F2D24; } .timing.ok{ color:#1E6B4B; }
+.recbar{ margin:0 0 14px; }
+.recbar-track{ height:7px; background:#EEEAE0; border-radius:6px; overflow:hidden; }
+.recbar-fill{ height:100%; background:linear-gradient(90deg,#D89B2C,#BE7C16); border-radius:6px; }
+.cifre{ display:grid; grid-template-columns:1fr 1fr; gap:12px 14px; }
+.cifre > div{ display:flex; flex-direction:column; gap:2px; }
+.cifra-lab{ font-size:10.5px; color:var(--ink2); text-transform:uppercase; letter-spacing:.03em; }
+.cifra-val{ font-family:var(--fd); font-size:15.5px; font-weight:600; letter-spacing:-.3px; } .cifra-val.gold{ color:var(--gold); }
+.esito{ margin-top:13px; font-size:13px; font-weight:600; padding:9px 12px; border-radius:10px; }
+.esito.ok{ background:var(--green-bg); color:#1E6B4B; } .esito.ko{ background:var(--coral-bg); color:#9F2D24; }
+.link-rec{ display:inline-block; margin-top:12px; font-size:13px; font-weight:600; color:#2E6F9E; text-decoration:none; background:#EAF1F6; padding:8px 13px; border-radius:9px; }
+.card-note{ margin-top:11px; font-size:13px; color:var(--ink2); background:#F4F7F4; padding:9px 11px; border-radius:9px; }
+.act{ margin-top:16px; }
+.act-primary{ width:100%; border:none; border-radius:13px; padding:14px; font-size:15px; font-weight:700; cursor:pointer; background:var(--gold); color:#fff; box-shadow:0 5px 16px rgba(190,124,22,.26); }
+.act-icons{ display:flex; gap:8px; margin-top:10px; }
+.icon-btn{ width:42px; height:42px; border-radius:12px; border:1px solid var(--line); background:#fff; font-size:16px; display:grid; place-items:center; cursor:pointer; color:var(--ink2); }
+.icon-btn.danger{ color:var(--coral); margin-left:auto; }
+.footer-btns{ position:fixed; bottom:0; left:0; right:0; max-width:560px; margin:0 auto; display:flex; gap:9px; padding:12px 14px 18px; background:linear-gradient(transparent,var(--paper) 26%); }
+.big-add{ flex:1; background:var(--ink); color:#fff; border:none; font-size:16px; font-weight:700; padding:16px; border-radius:15px; cursor:pointer; box-shadow:0 6px 18px rgba(20,32,43,.22); }
+.exp{ background:#fff; border:1px solid var(--line); color:var(--ink); font-weight:600; font-size:14px; padding:0 18px; border-radius:15px; cursor:pointer; }
+.modale{ position:fixed; inset:0; background:rgba(16,28,38,.5); display:flex; align-items:flex-end; z-index:50; backdrop-filter:blur(2px); }
+.sheet{ background:var(--paper); width:100%; max-width:560px; margin:0 auto; border-radius:24px 24px 0 0; padding:20px 16px calc(18px + env(safe-area-inset-bottom)); max-height:92vh; overflow:auto; animation:su .22s ease; }
 @keyframes su{ from{ transform:translateY(30px); opacity:.6 } to{ transform:none; opacity:1 } }
-.sheet-hd{ font-size:18px; font-weight:750; margin-bottom:14px; }
-.campo{ display:flex; flex-direction:column; gap:5px; margin-bottom:12px; }
+.sheet-hd{ font-family:var(--fd); font-size:19px; font-weight:700; margin-bottom:16px; }
+.campo{ display:flex; flex-direction:column; gap:6px; margin-bottom:13px; }
 .campo > span{ font-size:13px; font-weight:600; color:var(--ink2); }
-.campo input, .campo textarea{ border:1px solid var(--line); background:#fff; border-radius:11px; padding:13px 12px; font-size:16px; color:var(--ink); font-family:inherit; width:100%; }
+.campo input, .campo textarea{ border:1px solid var(--line); background:#fff; border-radius:12px; padding:13px 12px; font-size:16px; color:var(--ink); font-family:inherit; width:100%; }
 .campo input:focus, .campo textarea:focus{ outline:2px solid var(--gold); border-color:var(--gold); }
-.campo-row{ display:flex; gap:10px; } .campo-row .campo{ flex:1; }
 .pills{ display:flex; gap:8px; }
-.pill{ flex:1; border:1px solid var(--line); background:#fff; color:var(--ink2); font-weight:600; font-size:14px; padding:12px; border-radius:11px; cursor:pointer; }
+.pill{ flex:1; border:1px solid var(--line); background:#fff; color:var(--ink2); font-weight:600; font-size:14px; padding:12px; border-radius:12px; cursor:pointer; }
 .pill.on{ background:var(--ink); color:#fff; border-color:var(--ink); }
-.anteprima-rec{ background:var(--gold-bg); color:#7A540F; border-radius:10px; padding:9px 12px; font-size:13.5px; margin:-2px 0 12px; } .anteprima-rec strong{ font-weight:800; }
-.anteprima-data{ background:#EBF0F4; color:#3F576A; border-radius:10px; padding:9px 12px; font-size:13.5px; margin-bottom:12px; }
-.sheet-btns{ display:flex; gap:10px; margin-top:6px; }
-.annulla{ flex:1; background:#fff; border:1px solid var(--line); color:var(--ink2); font-weight:600; font-size:15px; padding:14px; border-radius:13px; cursor:pointer; }
-.salva{ flex:2; background:var(--ink); color:#fff; border:none; font-weight:750; font-size:16px; padding:14px; border-radius:13px; cursor:pointer; }
+.anteprima-rec{ background:var(--gold-bg); color:#6F4D11; border-radius:11px; padding:10px 12px; font-size:13.5px; margin:-2px 0 13px; } .anteprima-rec strong{ font-weight:700; }
+.anteprima-data{ background:#EBF0F2; color:#3F576A; border-radius:11px; padding:10px 12px; font-size:13.5px; margin-bottom:13px; }
+.sheet-btns{ display:flex; gap:10px; margin-top:8px; }
+.ghost{ flex:1; background:#fff; border:1px solid var(--line); color:var(--ink2); font-weight:600; font-size:15px; padding:14px; border-radius:13px; cursor:pointer; }
+.salva{ flex:2; background:var(--ink); color:#fff; border:none; font-weight:700; font-size:16px; padding:14px; border-radius:13px; cursor:pointer; }
 `;
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
